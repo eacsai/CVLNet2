@@ -14,16 +14,19 @@ to_pil_image = transforms.ToPILImage()
 
 
 class Model(nn.Module):
-    def __init__(self, args):  # device='cuda:0',
+    def __init__(self, args, direct_map = False):  # device='cuda:0',
         super(Model, self).__init__()
 
         self.args = args
         self.level = args.level
         self.SatFeatureNet = VGGUnet(self.level)
+        
         self.GrdFeatureNet = VGGUnet(self.level)
+        if not direct_map:
+            self.ProjectFeatureNet = VGGUnet(self.level)
 
-        self.GrdEnc = Encoder()
-        self.GrdDec = Decoder()
+            self.GrdEnc = Encoder()
+            self.GrdDec = Decoder()
 
         self.HeightAttention = CrossAttention(dim=256, qkv_bias=False)
         self.meters_per_pixel = []
@@ -191,7 +194,7 @@ class Model(nn.Module):
 
         return final.permute(0,3,1,2)
 
-    def direct_map(self, sat_map, project_map, gt_shift_u=None, gt_shift_v=None, gt_heading=None, mode='train'):
+    def direct_map(self, sat_map, grd_img, project_map, sat_Height, left_camera_k, gt_shift_u=None, gt_shift_v=None, gt_heading=None, mode='train'):
         '''
         Args:
             sat_map: [B, C, A, A] A--> sidelength
@@ -206,6 +209,10 @@ class Model(nn.Module):
 
         grd_feat_list, grd_conf_list = self.GrdFeatureNet(project_map)
 
+        shift_u = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
+        shift_v = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
+        # heading = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
+        heading = gt_heading
         # vis origin projection
         # grd_origin_proj = self.project_grd_to_map( grd_img_left, torch.zeros(B,1,512,512).to('cuda'), shift_u, shift_v, torch.zeros_like(heading), left_camera_k, 512, ori_grdH, ori_grdW)
         # grd_project_img = to_pil_image(grd_origin_proj[0])
@@ -394,6 +401,146 @@ class Model(nn.Module):
 
         if mode == 'train':
             return self.triplet_loss(corr_maps, gt_shift_u, gt_shift_v, gt_heading)
+        else:
+            return pred_u1, pred_v1  # [B], [B]
+
+    def inverse_map(self, sat_map, grd_img_left, project_map, sat_height, left_camera_k, gt_shift_u=None, gt_shift_v=None, gt_heading=None, mode='train'):
+        B, _, ori_grdH, ori_grdW = grd_img_left.shape
+
+        sat_feat_list, sat_conf_list = self.SatFeatureNet(sat_map)
+        grd_feat_list, grd_conf_list = self.GrdFeatureNet(grd_img_left)
+        project_feat_list, project_conf_list = self.ProjectFeatureNet(project_map)
+
+        shift_u = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
+        shift_v = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
+        # heading = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
+        heading = gt_heading
+
+        g2s_corr_maps = []
+        g2p_corr_maps = []
+
+        for level in range(len(sat_feat_list)):
+            meter_per_pixel = self.meters_per_pixel[level]
+            sat_feat = sat_feat_list[level]
+            grd_feat = grd_feat_list[level]
+            project_feat = project_feat_list[level]
+
+            # visulize feature map
+            # sat_features_to_RGB(sat_feat, grd_feat)
+
+            A = sat_feat.shape[-1]
+            B, C, H, W = grd_feat.shape
+            # if level == 0:
+            #     sat_height = F.interpolate(sat_height.detach(), size=(A, A), mode='bilinear', align_corners=False)
+            #     scale = C ** -0.5
+            #     # pred_height =  self.HeightAttention(sat_feat_height, grd_feat_height, grd_height).view(B,1,A_max,A_max)
+            #     sat_feat_reshaped = sat_feat.view(B, C, -1)  # (B, C, A*A)
+            #     project_feat_reshaped = project_feat.view(B, C, -1)  # (B, C, A*A)
+            #     sat_height_reshaped = sat_height.view(B, 1, -1)  # (B, 1, A*A)
+
+            #     sat_feat_normalized = F.normalize(sat_feat_reshaped, p=2, dim=1, eps=1e-8)
+            #     project_feat_normalized = F.normalize(project_feat_reshaped, p=2, dim=1, eps=1e-8)
+            #     dot = torch.matmul(sat_feat_normalized.transpose(1, 2), project_feat_normalized) * scale
+            #     temperature = 0.01
+            #     dot = F.softmax(dot / temperature, dim=-1)
+            #     pred_height = torch.matmul(dot, sat_height_reshaped.permute(0,2,1)).view(B, 1, A, A)
+            # else:
+            #     pred_height = F.interpolate(pred_height, size=(A, A), mode='bilinear', align_corners=False)
+
+            sat_height = F.interpolate(sat_height.detach(), size=(A, A), mode='bilinear', align_corners=False)
+            scale = C ** -0.5
+            # pred_height =  self.HeightAttention(sat_feat_height, grd_feat_height, grd_height).view(B,1,A_max,A_max)
+            sat_feat_reshaped = sat_feat.view(B, C, -1).permute(0,2,1)  # (B, A*A, C)
+            project_feat_reshaped = project_feat.view(B, C, -1).permute(0,2,1)  # (B, A*A, C)
+            sat_height_reshaped = sat_height.view(B, 1, -1).permute(0,2,1)  # (B, A*A, 1)
+
+            pred_height = torch.tensor([]).to('cuda')
+            for b in range(B):
+                q = sat_feat_reshaped[b] # (A*A, C)
+                k = project_feat_reshaped[b] # (A*A, C)
+                v = sat_height_reshaped[b] # (A*A, 1)
+                mask = v.clone()
+                mask[mask != 0] = 1
+                k = k[mask.squeeze(-1).bool()]
+                v = v[mask.squeeze(-1).bool()]
+
+                q_normalized = F.normalize(q, p=2, dim=1, eps=1e-8)
+                k_normalized = F.normalize(k, p=2, dim=1, eps=1e-8)
+                dot = torch.matmul(q_normalized, k_normalized.transpose(0, 1))
+                temperature = 0.01
+                dot = F.softmax(dot / temperature, dim=-1)
+                res = torch.matmul(dot, v).view(A, A, 1).permute(2,0,1).unsqueeze(0) # (A*A, 1)
+                pred_height = torch.cat((pred_height, res), dim=0)
+            # visulize height map
+            # 移除不必要的维度，得到形状为 [256, 1024]
+            # img_num = 2
+            # height_map = pred_height[img_num].squeeze(0)  # 现在形状为 [256, 1024]
+            # plt.imshow(height_map.cpu().detach().numpy(), cmap='viridis')  # 使用 'viridis' 映射显示颜色
+            # plt.colorbar(label='Satellite Height')
+            # plt.title('Height Map Visualization')
+            # plt.savefig('pred_height_img.png')
+            # plt.close() 
+            # sat_project_img = to_pil_image(sat_map[img_num])
+            # sat_project_img.save('sat_map.png') 
+            # plt.close()
+            if not self.args.predict_height:
+                pred_height = torch.zeros_like(pred_height)
+            
+            # vis projection
+            # img_num = 2
+            # pred_height = F.interpolate(pred_height, size=(512, 512), mode='bilinear', align_corners=False)
+            # pred_height_project = self.project_grd_to_map( grd_img_left, pred_height, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH, ori_grdW)
+            # grd_project_img = to_pil_image(pred_height_project[img_num])
+            # grd_project_img.save('pred_height_project.png')
+
+            # zero_height_project = self.project_grd_to_map( grd_img_left, -torch.zeros_like(pred_height), shift_u, shift_v, heading, left_camera_k, 512, ori_grdH, ori_grdW)
+            # grd_project_img = to_pil_image(zero_height_project[img_num])
+            # grd_project_img.save('zero_height_project.png')
+
+            grd_feat_proj = self.project_grd_to_map( grd_feat, pred_height, shift_u, shift_v, heading, left_camera_k, A, ori_grdH, ori_grdW)
+
+            crop_H = int(A - self.args.shift_range_lat * 3 / meter_per_pixel)
+            crop_W = int(A - self.args.shift_range_lon * 3 / meter_per_pixel)
+            
+            g2s_feat = TF.center_crop(grd_feat_proj, [crop_H, crop_W])
+            g2s_feat = F.normalize(g2s_feat.reshape(B, -1)).reshape(B, -1, crop_H, crop_W)
+
+            g2p_feat = TF.center_crop(project_feat, [crop_H, crop_W])
+            g2p_feat = F.normalize(g2p_feat.reshape(B, -1)).reshape(B, -1, crop_H, crop_W)
+
+            s_feat = sat_feat.reshape(1, -1, A, A)  # [B, C, H, W]->[1, B*C, H, W]
+            
+            denominator = F.avg_pool2d(sat_feat.pow(2), (crop_H, crop_W), stride=1, divisor_override=1)  # [B, 4W]
+            denominator = torch.sum(denominator, dim=1)  # [B, H, W]
+            denominator = torch.maximum(torch.sqrt(denominator), torch.ones_like(denominator) * 1e-6)
+            
+            # g2s_corr
+            g2s_corr = F.conv2d(s_feat, g2s_feat, groups=B)[0]  # [B, H, W]
+            g2s_corr = 2 - 2 * g2s_corr / denominator
+            B, corr_H, corr_W = g2s_corr.shape
+            g2s_corr_maps.append(g2s_corr)
+            g2s_max_index = torch.argmin(g2s_corr.reshape(B, -1), dim=1)
+
+            # g2p_corr
+            g2p_corr = F.conv2d(s_feat, g2p_feat, groups=B)[0]  # [B, H, W]
+            g2p_corr = 2 - 2 * g2p_corr / denominator
+            B, corr_H, corr_W = g2p_corr.shape
+            g2p_corr_maps.append(g2p_corr)
+            g2p_max_index = torch.argmin(g2p_corr.reshape(B, -1), dim=1)
+
+            max_index = (g2s_max_index + g2p_max_index) // 2
+            pred_u = (max_index % corr_W - corr_W / 2) * meter_per_pixel  # / self.args.shift_range_lon
+            pred_v = -(max_index // corr_W - corr_H / 2) * meter_per_pixel  # / self.args.shift_range_lat
+
+            cos = torch.cos(gt_heading[:, 0] * self.args.rotation_range / 180 * torch.pi)
+            sin = torch.sin(gt_heading[:, 0] * self.args.rotation_range / 180 * torch.pi)
+
+            pred_u1 = pred_u * cos + pred_v * sin
+            pred_v1 = - pred_u * sin + pred_v * cos
+
+
+        if mode == 'train':
+            return self.triplet_loss(g2s_corr_maps, gt_shift_u, gt_shift_v, gt_heading) + self.triplet_loss(g2p_corr_maps, gt_shift_u, gt_shift_v, gt_heading)
         else:
             return pred_u1, pred_v1  # [B], [B]
 

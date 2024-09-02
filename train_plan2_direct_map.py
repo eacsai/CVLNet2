@@ -15,16 +15,15 @@ from kitti_image_model_plan2 import Model
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', type=str, default='feature_forward_map_unet')
+    parser.add_argument('--name', type=str, default='direct_map')
     parser.add_argument('--epochs', type=int, default=5)
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=28)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--level', type=int, default=3, help='2, 3, 4, -1, -2, -3, -4')
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
     parser.add_argument('--shift_range_lat', type=float, default=20., help='meters')
     parser.add_argument('--shift_range_lon', type=float, default=20., help='meters')
     parser.add_argument('--predict_height', type=int, default=1., help='whether to predict height')
-    parser.add_argument('--feature_forward_project', type=int, default=0, help='test with trained model')
     parser.add_argument('--test', type=int, default=0, help='test with trained model')
 
     return parser.parse_args()
@@ -53,9 +52,9 @@ def test1(model, args, save_path, epoch):
     gt_lats = []
 
     with torch.no_grad():
-        for i, Data in enumerate(dataloader, 0):
-            sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_height, project_map, sat_height, grd_depth = [item.to(device) for item in Data[:-1]]
-            pred_u, pred_v = model.feature_map_Unet(sat_map, grd_left_imgs, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='test')
+        for i, data in enumerate(dataloader, 0):
+            sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_height, project_map, sat_height, grd_depth = [item.to(device) for item in data[:-1]]
+            pred_u, pred_v = model.direct_map(sat_map, project_map, sat_height, gt_shift_u, gt_shift_v, gt_heading, mode='test')
 
             pred_lons.append(pred_u.data.cpu().numpy())
             pred_lats.append(pred_v.data.cpu().numpy())
@@ -149,8 +148,7 @@ def train(model, lr, args, save_path):
             sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_height, project_map, sat_height, grd_depth = [item.to(device) for item in Data[:-1]]
 
             optimizer.zero_grad()
-
-            loss = model.feature_map_Unet(sat_map, grd_left_imgs, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
+            loss = model.direct_map(sat_map, grd_left_imgs, project_map, sat_height, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
@@ -161,6 +159,7 @@ def train(model, lr, args, save_path):
         print('Save Model ...')
         torch.save(model.state_dict(), os.path.join(save_path, 'model_' + str(epoch) + '.pth'))
         test1(model, args, save_path, epoch)
+
     print('Finished Training')
 
 if __name__ == '__main__':
@@ -176,9 +175,10 @@ if __name__ == '__main__':
     save_path = getSavePath(args)
     lr = args.lr
 
-    model = Model(args).to(device)
+    model = Model(args, direct_map = True).to(device)
     if args.test:
         model.load_state_dict(torch.load(os.path.join(save_path, 'model_4.pth')))
-        test1(model, args, save_path, epoch=4)
+        test1(model, args, save_path, epoch=0)
     else:
+        # model.load_state_dict(torch.load(os.path.join(save_path, 'model_4.pth')))
         train(model, lr, args, save_path)
