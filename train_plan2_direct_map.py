@@ -1,7 +1,7 @@
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 import torch
 import numpy as np
@@ -15,10 +15,10 @@ from kitti_image_model_plan2 import Model
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', type=str, default='direct_map')
+    parser.add_argument('--name', type=str, default='direct_map_v2')
     parser.add_argument('--epochs', type=int, default=5)
-    parser.add_argument('--batch_size', type=int, default=28)
-    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--level', type=int, default=3, help='2, 3, 4, -1, -2, -3, -4')
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
     parser.add_argument('--shift_range_lat', type=float, default=20., help='meters')
@@ -54,7 +54,7 @@ def test1(model, args, save_path, epoch):
     with torch.no_grad():
         for i, data in enumerate(dataloader, 0):
             sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_height, project_map, sat_height, grd_depth = [item.to(device) for item in data[:-1]]
-            pred_u, pred_v = model.direct_map(sat_map, project_map, sat_height, gt_shift_u, gt_shift_v, gt_heading, mode='test')
+            pred_u, pred_v = model.direct_map(sat_map, grd_left_imgs, project_map, sat_height, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='test')
 
             pred_lons.append(pred_u.data.cpu().numpy())
             pred_lats.append(pred_v.data.cpu().numpy())
@@ -177,7 +177,7 @@ if __name__ == '__main__':
 
     model = Model(args, direct_map = True).to(device)
     if args.test:
-        model.load_state_dict(torch.load(os.path.join(save_path, 'model_4.pth')))
+        model.load_state_dict(torch.load(os.path.join(save_path, 'model_0.pth')))
         test1(model, args, save_path, epoch=0)
     else:
         # model.load_state_dict(torch.load(os.path.join(save_path, 'model_4.pth')))

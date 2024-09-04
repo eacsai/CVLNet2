@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import einops as E
 import torch.nn.functional as F
+from typing import Optional
 
 CameraGPS_shift = [1.08, 0.26]
 Satmap_zoom = 18
@@ -227,3 +228,36 @@ def tokens_to_output(output_type, dense_tokens, cls_token, feat_hw):
         raise ValueError()
 
     return output
+
+def make_grid(
+    w: float,
+    h: float,
+    step_x: float = 1.0,
+    step_y: float = 1.0,
+    orig_x: float = 0,
+    orig_y: float = 0,
+    y_up: bool = False,
+    device: Optional[torch.device] = None,
+) -> torch.Tensor:
+    x, y = torch.meshgrid(
+        [
+            torch.arange(orig_x, w + orig_x, step_x, device=device),
+            torch.arange(orig_y, h + orig_y, step_y, device=device),
+        ],
+        indexing="xy",
+    )
+    if y_up:
+        y = y.flip(-2)
+    grid = torch.stack((x, y), -1)
+    R = torch.tensor([[0, 1], [1, 0]]).float().to(grid.device)
+    XZ = torch.einsum('ij, hwj -> hwi', R, grid)  # shape = [satmap_sidelength, satmap_sidelength, 2]
+    return XZ
+
+def from_homogeneous(points, eps: float = 1e-8):
+    """Remove the homogeneous dimension of N-dimensional points.
+    Args:
+        points: torch.Tensor or numpy.ndarray with size (..., N+1).
+    Returns:
+        A torch.Tensor or numpy ndarray with size (..., N).
+    """
+    return points[..., :-1] / (points[..., -1:] + eps)
