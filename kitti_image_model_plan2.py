@@ -10,6 +10,8 @@ from torchvision import transforms
 import matplotlib.pyplot as plt
 from visualize import *
 
+from models.feature_extractor import FeatureExtractor
+from models.bev_net import BEVNet
 to_pil_image = transforms.ToPILImage()
 
 
@@ -34,6 +36,8 @@ class Model(nn.Module):
         for level in range(4):
             self.meters_per_pixel.append(meter_per_pixel * (2 ** (3 - level)))
         
+        self.image_encoder = FeatureExtractor()
+        self.bev_net = BEVNet()
         torch.autograd.set_detect_anomaly(True)
 
     def sat2world(self, satmap_sidelength, pred_height):
@@ -317,8 +321,8 @@ class Model(nn.Module):
         B, _, ori_grdH, ori_grdW = grd_img_left.shape
 
         sat_feat_list, sat_conf_list = self.SatFeatureNet(sat_map)
-
-        grd_feat_list, grd_conf_list = self.GrdFeatureNet(grd_img_left)
+        sat_feat = sat_feat_list[-1]
+        grd_feat = self.image_encoder(grd_img_left)["feature_maps"][0]
 
         shift_u = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
         shift_v = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
@@ -336,68 +340,66 @@ class Model(nn.Module):
         corr_maps = []
         ideal_depth_values = torch.arange(80).type(torch.float32) + 1
 
-        for level in range(len(sat_feat_list)):
-            meter_per_pixel = self.meters_per_pixel[level]
-            sat_feat = sat_feat_list[level]
-            grd_feat = grd_feat_list[level]
 
-            A = sat_feat.shape[-1]
-            B, C, H, W = grd_feat.shape
-            grd_feat_depth = F.interpolate(grd_depth.unsqueeze(1), size=(H, W), mode='bilinear', align_corners=False).squeeze(1)
-            # height_map = grd_feat_depth[0]  # 现在形状为 [256, 1024]
-            # plt.imshow(height_map.cpu().detach().numpy(), cmap='viridis')  # 使用 'viridis' 映射显示颜色
-            # plt.colorbar(label='Satellite Height')
-            # plt.title('Height Map Visualization')
-            # plt.savefig('pred_height_img.png')
-            # plt.close()
-            # 理想的深度值列表
-            # 计算每个元素到理想深度值的差异，得到误差矩阵
-            # 使用 torch.abs(depth.unsqueeze(-1) - ideal_depth_values)
-            error_matrix = torch.abs(grd_feat_depth.unsqueeze(-1) - ideal_depth_values.to(grd_depth.device))
-            temperature = 2 ** (4 - level)
-            one_hot_depth = F.softmax(-error_matrix**2 / temperature, dim=-1)
+        meter_per_pixel = self.meters_per_pixel[-2]
 
-            binary_tensor = (grd_feat_depth != 0).float()  # 生成一个二值化tensor，非零为1，零为0
-            # 将tensor扩展到所需形状 [3, 3, 80]
-            mask = binary_tensor.unsqueeze(-1).repeat(1, 1, 1, 80)
-            output_scores = one_hot_depth * mask
-            # grd_image_sample = F.interpolate(grd_img_left, size=(H, W), mode='bilinear', align_corners=False)
-            grd_feat_proj = self.forward_project_v2( output_scores, grd_feat, left_camera_k, A, ori_grdH, ori_grdW)
-            
-            # vis origin projection
-            # grd_image_sample = F.interpolate(grd_img_left, size=(H, W), mode='bilinear', align_corners=False)
-            # res = self.forward_project_v2( output_scores, grd_image_sample, left_camera_k, A, ori_grdH, ori_grdW)
-            # grd_project_img = to_pil_image(res[1])
-            # grd_project_img.save('grd_origin_proj.png')
-            # visulize feature map
-            # sat_features_to_RGB(sat_feat, grd_feat_proj)
-            
-            crop_H = int(A - self.args.shift_range_lat * 3 / meter_per_pixel)
-            crop_W = int(A - self.args.shift_range_lon * 3 / meter_per_pixel)
-            g2s_feat = TF.center_crop(grd_feat_proj, [crop_H, crop_W])
-            g2s_feat = F.normalize(g2s_feat.reshape(B, -1)).reshape(B, -1, crop_H, crop_W)
+        A = sat_feat.shape[-1]
+        B, C, H, W = grd_feat.shape
+        grd_feat_depth = F.interpolate(grd_depth.unsqueeze(1), size=(H, W), mode='bilinear', align_corners=False).squeeze(1)
+        # height_map = grd_feat_depth[0]  # 现在形状为 [256, 1024]
+        # plt.imshow(height_map.cpu().detach().numpy(), cmap='viridis')  # 使用 'viridis' 映射显示颜色
+        # plt.colorbar(label='Satellite Height')
+        # plt.title('Height Map Visualization')
+        # plt.savefig('pred_height_img.png')
+        # plt.close()
+        # 理想的深度值列表
+        # 计算每个元素到理想深度值的差异，得到误差矩阵
+        # 使用 torch.abs(depth.unsqueeze(-1) - ideal_depth_values)
+        error_matrix = torch.abs(grd_feat_depth.unsqueeze(-1) - ideal_depth_values.to(grd_depth.device))
+        temperature = 4
+        one_hot_depth = F.softmax(-error_matrix**2 / temperature, dim=-1)
 
-            s_feat = sat_feat.reshape(1, -1, A, A)  # [B, C, H, W]->[1, B*C, H, W]
-            corr = F.conv2d(s_feat, g2s_feat, groups=B)[0]  # [B, H, W]
+        binary_tensor = (grd_feat_depth != 0).float()  # 生成一个二值化tensor，非零为1，零为0
+        # 将tensor扩展到所需形状 [3, 3, 80]
+        mask = binary_tensor.unsqueeze(-1).repeat(1, 1, 1, 80)
+        output_scores = one_hot_depth * mask
+        # grd_image_sample = F.interpolate(grd_img_left, size=(H, W), mode='bilinear', align_corners=False)
+        grd_feat_proj = self.forward_project_v2( output_scores, grd_feat, left_camera_k, A, ori_grdH, ori_grdW)
+        grd_feat_proj = self.bev_net(grd_feat_proj)["output"]
+        # vis origin projection
+        # grd_image_sample = F.interpolate(grd_img_left, size=(H, W), mode='bilinear', align_corners=False)
+        # res = self.forward_project_v2( output_scores, grd_image_sample, left_camera_k, A, ori_grdH, ori_grdW)
+        # grd_project_img = to_pil_image(res[1])
+        # grd_project_img.save('grd_origin_proj.png')
+        # visulize feature map
+        # sat_features_to_RGB(sat_feat, grd_feat_proj)
+        
+        crop_H = int(A - self.args.shift_range_lat * 3 / meter_per_pixel)
+        crop_W = int(A - self.args.shift_range_lon * 3 / meter_per_pixel)
+        g2s_feat = TF.center_crop(grd_feat_proj, [crop_H, crop_W])
+        g2s_feat = F.normalize(g2s_feat.reshape(B, -1)).reshape(B, -1, crop_H, crop_W)
 
-            denominator = F.avg_pool2d(sat_feat.pow(2), (crop_H, crop_W), stride=1, divisor_override=1)  # [B, 4W]
-            denominator = torch.sum(denominator, dim=1)  # [B, H, W]
-            denominator = torch.maximum(torch.sqrt(denominator), torch.ones_like(denominator) * 1e-6)
-            corr = 2 - 2 * corr / denominator
+        s_feat = sat_feat.reshape(1, -1, A, A)  # [B, C, H, W]->[1, B*C, H, W]
+        corr = F.conv2d(s_feat, g2s_feat, groups=B)[0]  # [B, H, W]
 
-            B, corr_H, corr_W = corr.shape
+        denominator = F.avg_pool2d(sat_feat.pow(2), (crop_H, crop_W), stride=1, divisor_override=1)  # [B, 4W]
+        denominator = torch.sum(denominator, dim=1)  # [B, H, W]
+        denominator = torch.maximum(torch.sqrt(denominator), torch.ones_like(denominator) * 1e-6)
+        corr = 2 - 2 * corr / denominator
 
-            corr_maps.append(corr)
+        B, corr_H, corr_W = corr.shape
 
-            max_index = torch.argmin(corr.reshape(B, -1), dim=1)
-            pred_u = (max_index % corr_W - corr_W / 2) * meter_per_pixel  # / self.args.shift_range_lon
-            pred_v = -(max_index // corr_W - corr_H / 2) * meter_per_pixel  # / self.args.shift_range_lat
+        corr_maps.append(corr)
 
-            cos = torch.cos(gt_heading[:, 0] * self.args.rotation_range / 180 * torch.pi)
-            sin = torch.sin(gt_heading[:, 0] * self.args.rotation_range / 180 * torch.pi)
+        max_index = torch.argmin(corr.reshape(B, -1), dim=1)
+        pred_u = (max_index % corr_W - corr_W / 2) * meter_per_pixel  # / self.args.shift_range_lon
+        pred_v = -(max_index // corr_W - corr_H / 2) * meter_per_pixel  # / self.args.shift_range_lat
 
-            pred_u1 = pred_u * cos + pred_v * sin
-            pred_v1 = - pred_u * sin + pred_v * cos
+        cos = torch.cos(gt_heading[:, 0] * self.args.rotation_range / 180 * torch.pi)
+        sin = torch.sin(gt_heading[:, 0] * self.args.rotation_range / 180 * torch.pi)
+
+        pred_u1 = pred_u * cos + pred_v * sin
+        pred_v1 = - pred_u * sin + pred_v * cos
 
 
         if mode == 'train':
@@ -626,7 +628,7 @@ class Model(nn.Module):
 
         losses = []
         for level in range(len(corr_maps)):
-            meter_per_pixel = self.meters_per_pixel[level]
+            meter_per_pixel = self.meters_per_pixel[-2]
 
             corr = corr_maps[level]
             B, corr_H, corr_W = corr.shape

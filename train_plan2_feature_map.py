@@ -15,9 +15,9 @@ from kitti_image_model_plan2 import Model
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', type=str, default='feature_forward_map_v2')
-    parser.add_argument('--epochs', type=int, default=5)
-    parser.add_argument('--batch_size', type=int, default=28)
+    parser.add_argument('--name', type=str, default='feature_forward_map_v2_bev')
+    parser.add_argument('--epochs', type=int, default=5) 
+    parser.add_argument('--batch_size', type=int, default=20)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--level', type=int, default=3, help='2, 3, 4, -1, -2, -3, -4')
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
