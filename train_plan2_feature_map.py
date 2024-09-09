@@ -1,7 +1,7 @@
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '6'
 
 import torch
 import numpy as np
@@ -15,8 +15,8 @@ from kitti_image_model_plan2 import Model
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', type=str, default='feature_forward_map_v2_bev')
-    parser.add_argument('--epochs', type=int, default=5) 
+    parser.add_argument('--name', type=str, default='feature_forward_map_v2_bev_dino_single_dpt_256')
+    parser.add_argument('--epochs', type=int, default=6) 
     parser.add_argument('--batch_size', type=int, default=20)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--level', type=int, default=3, help='2, 3, 4, -1, -2, -3, -4')
@@ -55,7 +55,7 @@ def test1(model, args, save_path, epoch):
     with torch.no_grad():
         for i, Data in enumerate(dataloader, 0):
             sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_height, project_map, sat_height, grd_depth = [item.to(device) for item in Data[:-1]]
-            pred_u, pred_v = model.feature_map(sat_map, grd_left_imgs, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='test')
+            pred_u, pred_v = model.feature_map(sat_map, grd_left_imgs, project_map, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='test')
 
             pred_lons.append(pred_u.data.cpu().numpy())
             pred_lats.append(pred_v.data.cpu().numpy())
@@ -150,7 +150,9 @@ def train(model, lr, args, save_path):
 
             optimizer.zero_grad()
 
-            loss = model.feature_map(sat_map, grd_left_imgs, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
+            # corr_loss, mse_loss = model.feature_map(sat_map, grd_left_imgs, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
+            # loss = corr_loss + mse_loss
+            loss = model.feature_map(sat_map, grd_left_imgs, project_map, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
