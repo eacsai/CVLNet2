@@ -1,4 +1,6 @@
 *.png
 *.pth
 *.pyc
+*.err
+*.out
 ModelsKitti/

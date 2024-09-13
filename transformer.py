@@ -21,53 +21,6 @@ class PositionalEncoding(nn.Module):
     def forward(self, x):
         x = x + self.pe[:, :x.size(1), :].to(x.device)
         return x
-
-class Multi_Head_CrossAttention(nn.Module):
-    def __init__(self, dim, heads, dim_head, qkv_bias, norm=nn.LayerNorm):
-        super(Multi_Head_CrossAttention, self).__init__()
-
-        self.scale = dim_head ** -0.5
-
-        self.heads = heads
-        self.dim_head = dim_head
-
-        self.to_q = nn.Sequential(norm(dim), nn.Linear(dim, heads * dim_head, bias=qkv_bias))
-        self.to_k = nn.Sequential(norm(dim), nn.Linear(dim, heads * dim_head, bias=qkv_bias))
-        self.to_v = nn.Sequential(norm(dim), nn.Linear(dim, heads * dim_head, bias=qkv_bias))
-
-        self.proj = nn.Linear(heads * dim_head, dim)
-        self.prenorm = norm(dim)
-        self.mlp = nn.Sequential(nn.Linear(dim, 2 * dim), nn.GELU(), nn.Linear(2 * dim, dim))
-        self.postnorm = norm(dim)
-
-    def forward(self, x, y):
-        """
-        x: (B, M, C)
-        y: (B, M, N, C)
-        """
-        
-        B, M, C = x.shape
-        _, M, N, C = y.shape
-
-        # Project with multiple heads
-        q = self.to_q(x).reshape(B, M, 1, self.heads, self.dim_head).permute(0, 3, 1, 2, 4) # [B, heads, M, 1, dim_head]
-        k = self.to_k(y).reshape(B, M, N, self.heads, self.dim_head).permute(0, 3, 1, 2, 4) # [B, heads, M, N, dim_head]
-        v = self.to_v(y).reshape(B, M, N, self.heads, self.dim_head).permute(0, 3, 1, 2, 4) # [B, heads, M, N, dim_head]
-
-        # Dot product attention along cameras
-        dot = self.scale * torch.matmul(q, k.transpose(-1, -2)).reshape(B, self.heads, M, N, 1)  
-        dot = dot.softmax(dim=-2)
-
-        # Combine values (image level features).
-        a = torch.sum(dot * v, dim=-2) # [B, self.heads, M, dim_heads]
-        a = a.permute(0, 2, 1, 3).reshape(B, M, self.heads * self.dim_head)
-        z = self.proj(a)
-
-        z = self.prenorm(z)
-        z = z + self.mlp(z)
-        z = self.postnorm(z)  # [B, M, C]
-    
-        return z
     
 class CrossAttention(nn.Module):
     def __init__(self, dim, qkv_bias, norm=nn.LayerNorm, max_len=5000):

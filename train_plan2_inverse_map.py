@@ -1,7 +1,8 @@
 import os
 
-os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+# os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+# os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+# os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 import torch
 import numpy as np
@@ -11,13 +12,13 @@ import os
 import scipy.io as scio
 
 from dataLoader.KITTI_dataset_forward import load_train_data, load_test1_data
-from kitti_image_model_plan2 import Model
+from kitti_image_model_plan2_inverse import Model
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', type=str, default='plan2_inverse_map_v2_0.01')
+    parser.add_argument('--name', type=str, default='plan2_inverse_map')
     parser.add_argument('--epochs', type=int, default=5)
-    parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=28) #28
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--level', type=int, default=3, help='2, 3, 4, -1, -2, -3, -4')
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
@@ -26,7 +27,7 @@ def parse_args():
     parser.add_argument('--predict_height', type=int, default=1., help='whether to predict height')
     parser.add_argument('--feature_forward_project', type=int, default=0, help='test with trained model')
     parser.add_argument('--test', type=int, default=0, help='test with trained model')
-
+    parser.add_argument('--root', type=str, default='/public/home/shiyj2-group/image_localization/KITTI/')
     return parser.parse_args()
 
 def getSavePath(args):
@@ -43,7 +44,7 @@ def getSavePath(args):
 
 def test1(model, args, save_path, epoch):
     model.eval()
-    dataloader = load_test1_data(mini_batch, args.shift_range_lat, args.shift_range_lon, args.rotation_range)
+    dataloader = load_test1_data(mini_batch, args.root, args.shift_range_lat, args.shift_range_lon, args.rotation_range)
 
     print('batch_size:', mini_batch, '\n num of batches:', len(dataloader))
     pred_lons = []
@@ -55,7 +56,7 @@ def test1(model, args, save_path, epoch):
     with torch.no_grad():
         for i, Data in enumerate(dataloader, 0):
             sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_height, project_map, sat_height, grd_depth = [item.to(device) for item in Data[:-1]]
-            pred_u, pred_v = model.inverse_map(sat_map, grd_left_imgs, project_map, sat_height, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='test')
+            pred_u, pred_v = model.inverse_map(sat_map, grd_left_imgs, left_camera_k, grd_height, gt_shift_u, gt_shift_v, gt_heading, mode='test')
 
             pred_lons.append(pred_u.data.cpu().numpy())
             pred_lats.append(pred_v.data.cpu().numpy())
@@ -142,15 +143,14 @@ def train(model, lr, args, save_path):
         optimizer = optim.Adam(model.parameters(), lr=base_lr)
         optimizer.zero_grad()
 
-        train_loader = load_train_data(mini_batch)
+        train_loader = load_train_data(mini_batch, root=args.root)
         print('batch_size:', mini_batch, '\n num of batches:', len(train_loader))
 
         for Loop, Data in enumerate(train_loader, 0):
             sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_height, project_map, sat_height, grd_depth = [item.to(device) for item in Data[:-1]]
 
             optimizer.zero_grad()
-
-            loss = model.inverse_map(sat_map, grd_left_imgs, project_map, sat_height, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
+            loss = model.inverse_map(sat_map, grd_left_imgs, left_camera_k, grd_height, gt_shift_u, gt_shift_v, gt_heading, mode='train')
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
@@ -178,7 +178,7 @@ if __name__ == '__main__':
 
     model = Model(args).to(device)
     if args.test:
-        model.load_state_dict(torch.load(os.path.join(save_path, 'model_3.pth')))
+        model.load_state_dict(torch.load(os.path.join(save_path, 'model_0.pth')))
         test1(model, args, save_path, epoch=4)
     else:
         # model.load_state_dict(torch.load(os.path.join(save_path, 'model_3.pth')))

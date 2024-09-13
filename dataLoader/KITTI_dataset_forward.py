@@ -412,7 +412,7 @@ class SatGrdDatasetTest(Dataset):
                grd_depth_imgs[0], \
                file_name 
 
-def load_train_data(batch_size, shift_range_lat=20, shift_range_lon=20, rotation_range=0):
+def load_train_data(batch_size, root, shift_range_lat=20, shift_range_lon=20, rotation_range=0):
     SatMap_process_sidelength = data_utils.get_process_satmap_sidelength()
 
     satmap_transform = transforms.Compose([
@@ -433,7 +433,7 @@ def load_train_data(batch_size, shift_range_lat=20, shift_range_lon=20, rotation
         transforms.ToTensor(),
     ])
 
-    train_set = SatGrdDataset(root=root_dir, file=train_file,
+    train_set = SatGrdDataset(root=root, file=train_file,
                               transform=(satmap_transform, grdimage_transform, forward_image_transform),
                               shift_range_lat=shift_range_lat,
                               shift_range_lon=shift_range_lon,
@@ -444,7 +444,7 @@ def load_train_data(batch_size, shift_range_lat=20, shift_range_lon=20, rotation
     return train_loader
 
 
-def load_test1_data(batch_size, shift_range_lat=20, shift_range_lon=20, rotation_range=0):
+def load_test1_data(batch_size, root, shift_range_lat=20, shift_range_lon=20, rotation_range=0):
     SatMap_process_sidelength = data_utils.get_process_satmap_sidelength()
 
     satmap_transform = transforms.Compose([
@@ -469,7 +469,7 @@ def load_test1_data(batch_size, shift_range_lat=20, shift_range_lon=20, rotation
     # np.random.seed(2022)
     # torch.manual_seed(2022)
 
-    test1_set = SatGrdDatasetTest(root=root_dir, file=test1_file,
+    test1_set = SatGrdDatasetTest(root=root, file=test1_file,
                             transform=(satmap_transform, grdimage_transform, forward_image_transform),
                             shift_range_lat=shift_range_lat,
                             shift_range_lon=shift_range_lon,
