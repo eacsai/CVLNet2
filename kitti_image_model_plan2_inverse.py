@@ -188,41 +188,42 @@ class Model(nn.Module):
         #     cv2.imwrite(f'pro_image{i}.png', image_np)
 
         for level in range(len(sat_feat_list)):
-            meter_per_pixel = self.meters_per_pixel[level]
+            if level == 0:
+                meter_per_pixel = self.meters_per_pixel[level]
 
-            sat_feat = sat_feat_list[level]
-            grd_feat = grd_feat_list[level]
+                sat_feat = sat_feat_list[level]
+                grd_feat = grd_feat_list[level]
 
-            A = sat_feat.shape[-1]
-            grd_feat_proj, _, u, mask = self.project_grd_to_map(
-                grd_feat, None, shift_u, shift_v, heading, left_camera_k, A, ori_grdH, ori_grdW)
+                A = sat_feat.shape[-1]
+                grd_feat_proj, _, u, mask = self.project_grd_to_map(
+                    grd_feat, None, shift_u, shift_v, heading, left_camera_k, A, ori_grdH, ori_grdW)
 
-            crop_H = int(A - self.args.shift_range_lat * 3 / meter_per_pixel)
-            crop_W = int(A - self.args.shift_range_lon * 3 / meter_per_pixel)
-            g2s_feat = TF.center_crop(grd_feat_proj, [crop_H, crop_W])
-            g2s_feat = F.normalize(g2s_feat.reshape(B, -1)).reshape(B, -1, crop_H, crop_W)
+                crop_H = int(A - self.args.shift_range_lat * 3 / meter_per_pixel)
+                crop_W = int(A - self.args.shift_range_lon * 3 / meter_per_pixel)
+                g2s_feat = TF.center_crop(grd_feat_proj, [crop_H, crop_W])
+                g2s_feat = F.normalize(g2s_feat.reshape(B, -1)).reshape(B, -1, crop_H, crop_W)
 
-            s_feat = sat_feat.reshape(1, -1, A, A)  # [B, C, H, W]->[1, B*C, H, W]
-            corr = F.conv2d(s_feat, g2s_feat, groups=B)[0]  # [B, H, W]
+                s_feat = sat_feat.reshape(1, -1, A, A)  # [B, C, H, W]->[1, B*C, H, W]
+                corr = F.conv2d(s_feat, g2s_feat, groups=B)[0]  # [B, H, W]
 
-            denominator = F.avg_pool2d(sat_feat.pow(2), (crop_H, crop_W), stride=1, divisor_override=1)  # [B, 4W]
-            denominator = torch.sum(denominator, dim=1)  # [B, H, W]
-            denominator = torch.maximum(torch.sqrt(denominator), torch.ones_like(denominator) * 1e-6)
-            corr = 2 - 2 * corr / denominator
+                denominator = F.avg_pool2d(sat_feat.pow(2), (crop_H, crop_W), stride=1, divisor_override=1)  # [B, 4W]
+                denominator = torch.sum(denominator, dim=1)  # [B, H, W]
+                denominator = torch.maximum(torch.sqrt(denominator), torch.ones_like(denominator) * 1e-6)
+                corr = 2 - 2 * corr / denominator
 
-            B, corr_H, corr_W = corr.shape
+                B, corr_H, corr_W = corr.shape
 
-            corr_maps.append(corr)
+                corr_maps.append(corr)
 
-            max_index = torch.argmin(corr.reshape(B, -1), dim=1)
-            pred_u = (max_index % corr_W - corr_W / 2) * meter_per_pixel  # / self.args.shift_range_lon
-            pred_v = -(max_index // corr_W - corr_H / 2) * meter_per_pixel  # / self.args.shift_range_lat
+                max_index = torch.argmin(corr.reshape(B, -1), dim=1)
+                pred_u = (max_index % corr_W - corr_W / 2) * meter_per_pixel  # / self.args.shift_range_lon
+                pred_v = -(max_index // corr_W - corr_H / 2) * meter_per_pixel  # / self.args.shift_range_lat
 
-            cos = torch.cos(gt_heading[:, 0] * self.args.rotation_range / 180 * np.pi)
-            sin = torch.sin(gt_heading[:, 0] * self.args.rotation_range / 180 * np.pi)
+                cos = torch.cos(gt_heading[:, 0] * self.args.rotation_range / 180 * np.pi)
+                sin = torch.sin(gt_heading[:, 0] * self.args.rotation_range / 180 * np.pi)
 
-            pred_u1 = pred_u * cos + pred_v * sin
-            pred_v1 = - pred_u * sin + pred_v * cos
+                pred_u1 = pred_u * cos + pred_v * sin
+                pred_v1 = - pred_u * sin + pred_v * cos
 
 
         if mode == 'train':
@@ -242,17 +243,18 @@ class Model(nn.Module):
 
         losses = []
         for level in range(len(corr_maps)):
-            meter_per_pixel = self.meters_per_pixel[level]
+            if level == 0:
+                meter_per_pixel = self.meters_per_pixel[level]
 
-            corr = corr_maps[level]
-            B, corr_H, corr_W = corr.shape
+                corr = corr_maps[level]
+                B, corr_H, corr_W = corr.shape
 
-            w = torch.round(corr_W / 2 - 0.5 + gt_delta_x_rot / meter_per_pixel)
-            h = torch.round(corr_H / 2 - 0.5 + gt_delta_y_rot / meter_per_pixel)
+                w = torch.round(corr_W / 2 - 0.5 + gt_delta_x_rot / meter_per_pixel)
+                h = torch.round(corr_H / 2 - 0.5 + gt_delta_y_rot / meter_per_pixel)
 
-            pos = corr[range(B), h.long(), w.long()]  # [B]
-            pos_neg = pos.reshape(-1, 1, 1) - corr  # [B, H, W]
-            loss = torch.sum(torch.log(1 + torch.exp(pos_neg * 10))) / (B * (corr_H * corr_W - 1))
-            losses.append(loss)
+                pos = corr[range(B), h.long(), w.long()]  # [B]
+                pos_neg = pos.reshape(-1, 1, 1) - corr  # [B, H, W]
+                loss = torch.sum(torch.log(1 + torch.exp(pos_neg * 10))) / (B * (corr_H * corr_W - 1))
+                losses.append(loss)
 
         return torch.sum(torch.stack(losses, dim=0))

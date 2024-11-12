@@ -1,7 +1,7 @@
 import os
 
 # os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-# os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 # os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 import torch
@@ -11,16 +11,18 @@ import torch.optim as optim
 import os
 import scipy.io as scio
 import torch.nn as nn
+from torchviz import make_dot
 
 from dataLoader.KITTI_dataset_forward import load_train_data, load_test1_data
 from kitti_image_model_plan2_inverse_height import Model
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', type=str, default='plan2_inverse_map')
+    parser.add_argument('--name', type=str, default='plan2_inverse_map_singe_height_e-3')
+    parser.add_argument('--load_name', type=str, default='plan2_inverse_map_singe')
     parser.add_argument('--epochs', type=int, default=5)
-    parser.add_argument('--batch_size', type=int, default=1) #28
-    parser.add_argument('--lr', type=float, default=1e-5)
+    parser.add_argument('--batch_size', type=int, default=16) #28
+    parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--level', type=int, default=3, help='2, 3, 4, -1, -2, -3, -4')
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
     parser.add_argument('--shift_range_lat', type=float, default=20., help='meters')
@@ -28,7 +30,7 @@ def parse_args():
     parser.add_argument('--predict_height', type=int, default=1., help='whether to predict height')
     parser.add_argument('--feature_forward_project', type=int, default=0, help='test with trained model')
     parser.add_argument('--test', type=int, default=0, help='test with trained model')
-    parser.add_argument('--root', type=str, default='/public/home/shiyj2-group/image_localization/KITTI/')
+    parser.add_argument('--root', type=str, default='/home/qiwei/dataset/KITTI/')
     return parser.parse_args()
 
 def getSavePath(args):
@@ -42,6 +44,12 @@ def getSavePath(args):
 
     return save_path
 
+def getLoadPath(args):
+    load_path = './ModelsKitti/2DoF/' + args.load_name
+
+    print('load_path:', load_path)
+
+    return load_path
 
 def test1(model, args, save_path, epoch):
     model.eval()
@@ -152,7 +160,22 @@ def train(model, lr, args, save_path):
 
             optimizer.zero_grad()
             loss = model.inverse_map(sat_map, grd_left_imgs, left_camera_k, grd_height, gt_shift_u, gt_shift_v, gt_heading, mode='train')
+            
+            # 可视化计算图
+            # make_dot(loss, params=dict(model.named_parameters())).render("model_graph", format="png")
+
             loss.backward()
+            # for idx, module in enumerate(model.CVattn):
+            #     for name, param in module.named_parameters():
+            #         if param.grad is None:
+            #             print(f"Module {idx} - {name} has no gradient")
+            #         else:
+            #             print(f"Module {idx} - {name} gradient: {param.grad}")
+            # print('grad', model.sat_embedding.grad)
+            # 反向传播后手动检查梯度
+            # for name, param in model.named_parameters():
+            #     if param.grad is not None:
+            #         print(f"{name} 梯度的大小: {param.grad.norm()}")
             optimizer.step()
             optimizer.zero_grad()
 
@@ -175,6 +198,7 @@ if __name__ == '__main__':
     mini_batch = args.batch_size
 
     save_path = getSavePath(args)
+    load_path = getLoadPath(args)
     lr = args.lr
 
     model = Model(args).to(device)
@@ -182,5 +206,5 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(os.path.join(save_path, 'model_0.pth')))
         test1(model, args, save_path, epoch=4)
     else:
-        # model.load_state_dict(torch.load(os.path.join(save_path, 'model_3.pth')))
+        model.load_state_dict(torch.load(os.path.join(load_path, 'model_4.pth'), weights_only=True), strict=False)
         train(model, lr, args, save_path)

@@ -209,14 +209,17 @@ class Model(nn.Module):
         # depth_prob = torch.softmax(depth_scores, dim=1)
         # image_polar = torch.einsum("...dhw,...hwz->...dzw", image_tensor, depth_prob)
         image_polar = torch.einsum("...dhw,...hwz->...dzw", grd_image, weights)
+        # grd_img_left_img = to_pil_image(image_polar[0])
+        # grd_img_left_img.save('image_polar.png')
 
         f = camera_k[:, 0, 0][..., None, None]
         c = camera_k[:, 0, 2][..., None, None]
 
         z_max = 100
-        x_max = 50
+        depth_max = 80
+        x_max = z_max / 2
         z_min = 0
-        Δ = 100 / satmap_sidelength
+        Δ = z_max / satmap_sidelength
 
         grid_xz = data_utils.make_grid(
             x_max * 2, z_max, step_y=Δ, step_x=Δ, orig_y=-50, orig_x=-x_max, y_up=False
@@ -227,7 +230,7 @@ class Model(nn.Module):
         z_idx = z_idx[None].expand_as(u)
         grid_polar = torch.stack([u, z_idx], -1)
 
-        size = grid_polar.new_tensor(image_polar.shape[-2:][::-1])
+        size = grid_polar.new_tensor([image_polar.shape[-1], depth_max])
         grid_uz_norm = (grid_polar * 2 / size) - 1
         # grid_uz_norm = grid_uz_norm * grid_polar.new_tensor([1, -1])  # y axis is up
         image_bev = F.grid_sample(image_polar, grid_uz_norm, align_corners=False)
@@ -237,7 +240,7 @@ class Model(nn.Module):
         # origin_image_show.save('origin_image.png')
         # image_polar_show = to_pil_image(image_polar[0])
         # image_polar_show.save('image_polar.png')
-        # image_bev_show = to_pil_image(image_bev[10])
+        # image_bev_show = to_pil_image(image_bev[7])
         # image_bev_show.save('image_bev.png')
         return image_bev
 
@@ -251,28 +254,31 @@ class Model(nn.Module):
         Returns:
 
         '''
-
+        B = grd_img.shape[0]
         sat_feat_list, sat_conf_list = self.SatFeatureNet(sat_map)
 
         grd_feat_list, grd_conf_list = self.GrdFeatureNet(project_map)
-
-        # shift_u = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
-        # shift_v = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
+        ori_grdH, ori_grdW = grd_img.shape[2], grd_img.shape[3]
+        shift_u = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
+        shift_v = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
         # # heading = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
-        # heading = gt_heading
+        heading = gt_heading
         # vis origin projection
-        # grd_origin_proj = self.project_grd_to_map( grd_img_left, torch.zeros(B,1,512,512).to('cuda'), shift_u, shift_v, torch.zeros_like(heading), left_camera_k, 512, ori_grdH, ori_grdW)
-        # grd_project_img = to_pil_image(grd_origin_proj[0])
-        # grd_project_img.save('grd_origin_proj.png')
+        img_num = 0
+        grd_origin_proj = self.project_grd_to_map( grd_img, torch.zeros(B,1,512,512).to('cuda'), shift_u, shift_v, torch.zeros_like(heading), left_camera_k, 512, ori_grdH, ori_grdW)
+        grd_project_img = to_pil_image(grd_origin_proj[img_num])
+        grd_project_img.save('grd_origin_proj.png')
         corr_maps = []
 
         # vis
-        # img_num = 0
-        # project_map_img = to_pil_image(project_map[img_num])
-        # project_map_img.save('project_map.png')
+        project_map_img = to_pil_image(project_map[img_num])
+        project_map_img.save('project_map.png')
 
-        # sat_project_img = to_pil_image(sat_map[img_num])
-        # sat_project_img.save('sat_map.png')
+        sat_project_img = to_pil_image(sat_map[img_num])
+        sat_project_img.save('sat_map.png')
+
+        grd_original_img = to_pil_image(grd_img[img_num])
+        grd_original_img.save('grd_img.png')
         for level in range(len(sat_feat_list)):
             meter_per_pixel = self.meters_per_pixel[level]
             sat_feat = sat_feat_list[level]
@@ -316,8 +322,7 @@ class Model(nn.Module):
         else:
             return pred_u1, pred_v1  # [B], [B]
     
-    def feature_map(self, sat_map, grd_img_left, grd_depth, left_camera_k, gt_shift_u=None, gt_shift_v=None, gt_heading=None,
-             mode='train'):
+    def feature_map(self, sat_map, grd_img_left, project_map, grd_depth, left_camera_k, gt_shift_u=None, gt_shift_v=None, gt_heading=None, mode='train'):
         B, _, ori_grdH, ori_grdW = grd_img_left.shape
 
         sat_feat_list, sat_conf_list = self.SatFeatureNet(sat_map)
@@ -331,16 +336,12 @@ class Model(nn.Module):
         # self.forward_project_v2( grd_depth, grd_img_left, left_camera_k, 512, ori_grdH, ori_grdW)
         # vis origin projection
         # meter_per_pixel = data_utils.get_meter_per_pixel()
-        # grd_origin_proj = self.forward_project( grd_img_left, left_camera_k, grd_depth, meter_per_pixel, 512, ori_grdH, ori_grdW)
+        # grd_origin_proj = self.forward_project_v2( grd_depth, grd_img_left, left_camera_k, 512, ori_grdH, ori_grdW)
         # grd_project_img = to_pil_image(grd_origin_proj[0])
         # grd_project_img.save('grd_origin_proj.png')
-        # grd_img_left_img = to_pil_image(grd_img_left[0])
-        # grd_img_left_img.save('grd_img_left.png')
 
         corr_maps = []
-        ideal_depth_values = torch.arange(80).type(torch.float32) + 1
-
-
+        ideal_depth_values = torch.linspace(1,80,32).type(torch.float32)
         meter_per_pixel = self.meters_per_pixel[-2]
 
         A = sat_feat.shape[-1]
@@ -356,21 +357,29 @@ class Model(nn.Module):
         # 计算每个元素到理想深度值的差异，得到误差矩阵
         # 使用 torch.abs(depth.unsqueeze(-1) - ideal_depth_values)
         error_matrix = torch.abs(grd_feat_depth.unsqueeze(-1) - ideal_depth_values.to(grd_depth.device))
-        temperature = 4
+        temperature = 1
         one_hot_depth = F.softmax(-error_matrix**2 / temperature, dim=-1)
 
         binary_tensor = (grd_feat_depth != 0).float()  # 生成一个二值化tensor，非零为1，零为0
         # 将tensor扩展到所需形状 [3, 3, 80]
-        mask = binary_tensor.unsqueeze(-1).repeat(1, 1, 1, 80)
+        mask = binary_tensor.unsqueeze(-1).repeat(1, 1, 1, ideal_depth_values.shape[0])
         output_scores = one_hot_depth * mask
+
         # grd_image_sample = F.interpolate(grd_img_left, size=(H, W), mode='bilinear', align_corners=False)
+
+        # res = self.forward_project_v2( output_scores, grd_image_sample, left_camera_k, A, ori_grdH, ori_grdW)
+
+        # output_scores = output_scores.reshape(B, -1, 80)
+        # output_scores = F.interpolate(output_scores, size=32, mode='linear', align_corners=True).reshape(8,32,128,512).permute(0, 2, 3, 1)
         grd_feat_proj = self.forward_project_v2( output_scores, grd_feat, left_camera_k, A, ori_grdH, ori_grdW)
         grd_feat_proj = self.bev_net(grd_feat_proj)["output"]
         # vis origin projection
         # grd_image_sample = F.interpolate(grd_img_left, size=(H, W), mode='bilinear', align_corners=False)
         # res = self.forward_project_v2( output_scores, grd_image_sample, left_camera_k, A, ori_grdH, ori_grdW)
-        # grd_project_img = to_pil_image(res[1])
+        # grd_project_img = to_pil_image(res[0])
         # grd_project_img.save('grd_origin_proj.png')
+        # grd_img_left_img = to_pil_image(grd_img_left[0])
+        # grd_img_left_img.save('grd_img_left.png')
         # visulize feature map
         # sat_features_to_RGB(sat_feat, grd_feat_proj)
         

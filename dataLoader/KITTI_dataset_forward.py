@@ -154,13 +154,13 @@ class SatGrdDataset(Dataset):
             grd_depth = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, grd_depth_dir,
                     image_no.lower().replace('.png', '_grd_depth.pt'))
             # read ground height
-            grd_height_left = torch.load(height_img_name, map_location=torch.device('cpu'))[0]
+            grd_height_left = torch.load(height_img_name, map_location=torch.device('cpu'), weights_only=True)[0]
             grd_height_imgs = torch.cat([grd_height_imgs, grd_height_left.unsqueeze(0)], dim=0)
             # read satellite height
-            sat_height_left = torch.load(sat_height, map_location=torch.device('cpu'))[0]
+            sat_height_left = torch.load(sat_height, map_location=torch.device('cpu'), weights_only=True)[0]
             sat_height_imgs = torch.cat([sat_height_imgs, sat_height_left.unsqueeze(0)], dim=0)
             # read ground depth
-            grd_depth_left = torch.load(grd_depth, map_location=torch.device('cpu'))
+            grd_depth_left = torch.load(grd_depth, map_location=torch.device('cpu'), weights_only=True)
             grd_depth_imgs = torch.cat([grd_depth_imgs, grd_depth_left.unsqueeze(0)], dim=0)
             # read ground image
             with Image.open(left_img_name, 'r') as GrdImg:
@@ -341,15 +341,15 @@ class SatGrdDatasetTest(Dataset):
                                 image_no.lower().replace('.png', '_grd_depth.pt'))
 
             # read ground height
-            grd_height_left = torch.load(height_img_name, map_location=torch.device('cpu'))[0]
+            grd_height_left = torch.load(height_img_name, map_location=torch.device('cpu'), weights_only=True)[0]
             grd_height_imgs = torch.cat([grd_height_imgs, grd_height_left.unsqueeze(0)], dim=0)
 
             # read satellite height
-            sat_height_left = torch.load(sat_height, map_location=torch.device('cpu'))[0]
+            sat_height_left = torch.load(sat_height, map_location=torch.device('cpu'), weights_only=True)[0]
             sat_height_imgs = torch.cat([sat_height_imgs, sat_height_left.unsqueeze(0)], dim=0)
 
             # read ground depth
-            grd_depth_left = torch.load(grd_depth, map_location=torch.device('cpu'))
+            grd_depth_left = torch.load(grd_depth, map_location=torch.device('cpu'), weights_only=True)
             grd_depth_imgs = torch.cat([grd_depth_imgs, grd_depth_left.unsqueeze(0)], dim=0)
             # read ground image
             with Image.open(left_img_name, 'r') as GrdImg:

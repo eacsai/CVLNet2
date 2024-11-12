@@ -1,7 +1,7 @@
 import os
 
-# os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-# os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
 import torch
 import numpy as np
@@ -15,9 +15,9 @@ from kitti_image_model_plan2 import Model
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', type=str, default='feature_forward_map_v2_bev_dino_single_dpt_depth')
-    parser.add_argument('--epochs', type=int, default=6) 
-    parser.add_argument('--batch_size', type=int, default=48)
+    parser.add_argument('--name', type=str, default='feature_forward_map_original')
+    parser.add_argument('--epochs', type=int, default=7) 
+    parser.add_argument('--batch_size', type=int, default=12)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--level', type=int, default=3, help='2, 3, 4, -1, -2, -3, -4')
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
@@ -26,7 +26,7 @@ def parse_args():
     parser.add_argument('--predict_height', type=int, default=1., help='whether to predict height')
     parser.add_argument('--feature_forward_project', type=int, default=0, help='test with trained model')
     parser.add_argument('--test', type=int, default=0, help='test with trained model')
-    parser.add_argument('--root', type=str, default='/public/home/shiyj2-group/image_localization/KITTI/', help='test with trained model')
+    parser.add_argument('--root', type=str, default='/data/dataset/KITTI/', help='test with trained model')
     return parser.parse_args()
 
 def getSavePath(args):
@@ -152,14 +152,13 @@ def train(model, lr, args, save_path):
 
             # corr_loss, mse_loss = model.feature_map(sat_map, grd_left_imgs, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
             # loss = corr_loss + mse_loss
-            corr_loss, mse_loss = model.feature_map(sat_map, grd_left_imgs, project_map, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
-            loss = corr_loss + mse_loss
+            loss = model.feature_map(sat_map, grd_left_imgs, project_map, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
 
             if Loop % 10 == 9:  #
-                print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) + ' Corr Loss: ' + str(corr_loss.item()) + ' Mse Loss: ' + str(mse_loss.item()))
+                print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) + ' Loss: ' + str(loss.item()))
 
         print('Save Model ...')
         torch.save(model.state_dict(), os.path.join(save_path, 'model_' + str(epoch) + '.pth'))
@@ -181,7 +180,7 @@ if __name__ == '__main__':
 
     model = Model(args).to(device)
     if args.test:
-        model.load_state_dict(torch.load(os.path.join(save_path, 'model_4.pth')))
+        # model.load_state_dict(torch.load(os.path.join(save_path, 'model_4.pth')))
         test1(model, args, save_path, epoch=4)
     else:
         train(model, lr, args, save_path)

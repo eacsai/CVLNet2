@@ -65,8 +65,8 @@ class DINO(torch.nn.Module):
         # get model
         self.model_name = dino_name
         self.checkpoint_name = f"{dino_name}_{model_name}"
-        # dino_vit = torch.hub.load(f"facebookresearch/{dino_name}", self.checkpoint_name)
-        dino_vit = torch.hub.load('./dino', 'dino_vitb16', source='local')
+        dino_vit = torch.hub.load(f"facebookresearch/{dino_name}:main", self.checkpoint_name)
+        # dino_vit = torch.hub.load('./dino', 'dino_vitb16', source='local')
         # dino_vit = torch.hub.load('./dinov2', 'dinov2_vitl14', weights={'LVD142M':'./dinov2_models/dinov2_vitl14_pretrain.pth'}, source='local')
         self.vit = dino_vit.eval().to(torch.float32)
         self.has_registers = "_reg" in model_name

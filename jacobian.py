@@ -202,7 +202,7 @@ def grid_sample(image, optical, jac=None):
 
         return out_val, jac_new1 #jac_new1 #jac_new.permute(4, 0, 1, 2, 3)
     else:
-        return out_val, None
+        return out_val, mask
 
 
     # out_val = (nw_val.view(N, C, H, W) * nw.view(N, 1, H, W) +

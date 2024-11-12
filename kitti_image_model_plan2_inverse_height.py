@@ -6,11 +6,10 @@ import data_utils
 from jacobian import grid_sample
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
-from transformer import CrossAttention
 from torchvision import transforms
 import matplotlib.pyplot as plt
 from visualize import *
-from cross_attention import CrossViewAttention
+from cross_attention import CrossViewAttention, BEVEmbedding
 
 to_pil_image = transforms.ToPILImage()
 
@@ -18,23 +17,26 @@ to_pil_image = transforms.ToPILImage()
 class Model(nn.Module):
     def __init__(self, args, direct_map = False):  # device='cuda:0',
         super(Model, self).__init__()
+        meter_per_pixel = data_utils.get_meter_per_pixel()
 
         self.args = args
         self.level = args.level
     
-        self.SatFeatureNet = VGGUnet(self.level)
-        self.GrdFeatureNet = VGGUnet(self.level)
+        self.SatFeatureNet = VGGUnet(self.level).eval()
+        self.GrdFeatureNet = VGGUnet(self.level).eval()
         
-        self.sat_random_feat = []
-        self.CVattn = []
-        for level in range(3):
-            self.sat_random_feat.append(nn.Parameter(torch.randn(1, 32 * (2 ** (3 - level)), 64 * (2 ** level), 64 * (2 ** level))).to('cuda'))
-            self.CVattn.append(CrossViewAttention(blocks=1, dim=32 * (2 ** (3 - level)), qkv_bias=False).to('cuda'))
-        self.mse_loss = nn.MSELoss()
+        self.sat_embedding = nn.Parameter(torch.ones(1,256,64,64, device='cuda') * 0.5, requires_grad=True)
+        # self.sat_embedding = nn.Embedding(100, 256)
+        # self.w = nn.Parameter(torch.ones(1,256,1,1, device='cuda') * torch.log(torch.tensor(999.0)), requires_grad=True)
+        self.w = nn.Parameter(torch.ones(1,256,64,64, device='cuda') * 0.5, requires_grad=True)
+        self.proj = nn.Linear(256, 256)
+        self.CVattn = nn.ModuleList()
         self.meters_per_pixel = []
-        meter_per_pixel = data_utils.get_meter_per_pixel()
-        for level in range(4):
+        for level in range(1):
+            self.CVattn.append(CrossViewAttention(blocks=1, dim=32 * (2 ** (3 - level)), qkv_bias=False).to('cuda'))
             self.meters_per_pixel.append(meter_per_pixel * (2 ** (3 - level)))
+        
+        self.mse_loss = nn.MSELoss()
         torch.autograd.set_detect_anomaly(True)
 
     def sat2world(self, satmap_sidelength, B, predict_height = None):
@@ -135,7 +137,7 @@ class Model(nn.Module):
 
         return grd_f_trans
     
-    def project_u(self, grd_f, shift_u, shift_v, heading, camera_k, satmap_sidelength, ori_grdH,
+    def project_sat_original(self, grd_f, shift_u, shift_v, heading, camera_k, satmap_sidelength, ori_grdH,
                            ori_grdW):
         '''
         grd_f: [B, C, H, W]
@@ -152,13 +154,14 @@ class Model(nn.Module):
         B, C, H, W = grd_f.size()
 
         XYZ_1 = self.sat2world(satmap_sidelength, B)  # [ sidelength,sidelength,4]
-        uv, mask = self.World2GrdImgPixCoordinates(shift_u, shift_v, heading, XYZ_1, camera_k,
+        uv, mask1 = self.World2GrdImgPixCoordinates(shift_u, shift_v, heading, XYZ_1, camera_k,
                                                    H, W, ori_grdH, ori_grdW)  # [B, S, E, H, W,2]
-
-        return uv[..., 0]
+        grd_f_trans, mask2 = grid_sample(grd_f, uv, jac=None)
+        mask = mask1.permute(0,3,1,2) & mask2
+        return grd_f_trans, uv[..., 0], mask
     
-    def predict_sat_height(self, sat_feat, grd_feat, grd_height, u, level):
-        predicted_sat_height = self.CVattn[level](sat_feat, grd_feat, grd_height, u)
+    def predict_sat_height(self, sat_embedding, grd_feat, grd_height, u, left_camera_k, level, valid_index):
+        predicted_sat_height = self.CVattn[level](sat_embedding, grd_feat, grd_height, u, left_camera_k, valid_index)
         return predicted_sat_height
     
     def inverse_map(self, sat_map, grd_img_left, left_camera_k, grd_height, gt_shift_u=None, gt_shift_v=None, gt_heading=None,
@@ -179,9 +182,9 @@ class Model(nn.Module):
         '''
 
         B, _, ori_grdH, ori_grdW = grd_img_left.shape
-
-        sat_feat_list, sat_conf_list = self.SatFeatureNet(sat_map)
-        grd_feat_list, grd_conf_list = self.GrdFeatureNet(grd_img_left)
+        with torch.no_grad():
+            sat_feat_list, sat_conf_list = self.SatFeatureNet(sat_map)
+            grd_feat_list, grd_conf_list = self.GrdFeatureNet(grd_img_left)
 
         shift_u = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
         shift_v = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
@@ -191,9 +194,11 @@ class Model(nn.Module):
 
         # self.CVattn(self.sat_random_feat[0], grd_feat_list[0], grd_height)
         # original vis    
-        # test_proj, _, u, mask = self.project_grd_to_map(
-        #         grd_img_left, None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH, ori_grdW)
-        
+        # test_proj, u, masks = self.project_sat_original(
+        #         grd_img_left, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH, ori_grdW)
+        # show_grd = test_proj[0,:,:,:]    
+        # grd_left_image = to_pil_image(show_grd)
+        # grd_left_image.save('grd_img_left.png')
         # show_sat = sat_map[0,:,:,:]    
         # sat_image = to_pil_image(show_sat)
         # sat_image.save('sat_image.png')
@@ -215,20 +220,68 @@ class Model(nn.Module):
         #     cv2.imwrite(f'pro_image{i}.png', image_np)
 
         for level in range(len(sat_feat_list)):
-            if level != 2:
+            if level != 0:
                 continue
             meter_per_pixel = self.meters_per_pixel[level]
             sat_feat = sat_feat_list[level]
             grd_feat = grd_feat_list[level]
             B, C, H, W = grd_feat.shape
             A = sat_feat.shape[-1]
+
             feat_height = F.interpolate(grd_height.permute(0,3,1,2), size=(H, W), mode='bilinear', align_corners=True)
-            u = self.project_u(
-                grd_feat, shift_u, shift_v, heading, left_camera_k, A, ori_grdH, ori_grdW)
-            predict_height = self.predict_sat_height(sat_feat, grd_feat, feat_height, u, level)
             
-            grd_feat_proj = self.project_grd_to_map(
+            grd_original_feat, u, masks = self.project_sat_original(
+                grd_feat, shift_u, shift_v, heading, left_camera_k, A, ori_grdH, ori_grdW)
+            
+            valid_indexes = []
+            # for i, mask in enumerate(masks.squeeze(1)):
+            #     index = mask.nonzero()
+            #     valid_indexes.append(index)
+            # max_len = max([len(index) for index in valid_indexes])
+            # sat_random_feat_rebatch = torch.zeros([B, C, max_len], dtype=torch.float32, requires_grad=False, device=sat_map.device)
+            # u_rebatch = torch.zeros([B, max_len], dtype=torch.float32, requires_grad=False, device=sat_map.device)
+            # for i in range(B):
+            #     for j, index in enumerate(valid_indexes[i]):
+            #         sat_random_feat_rebatch[i,:,j] = self.sat_random_feat[level][i,:,index[0],index[1]]
+            #         u_rebatch[i,j] = u[i,index[0],index[1]]
+            # sat_random_index = torch.zeros([B, A, A], dtype=torch.float32, requires_grad=False, device=sat_map.device)
+            # sat_random_feat = self.sat_embedding(sat_random_index.long()).permute(0,3,1,2)
+            predict_height = self.predict_sat_height(self.sat_embedding.repeat(B,1,1,1), grd_feat, feat_height, u, left_camera_k, level, valid_indexes)
+            grd_height_feat = self.project_grd_to_map(
                 grd_feat, predict_height, shift_u, shift_v, heading, left_camera_k, A, ori_grdH, ori_grdW)
+
+            # vis height
+            # 可视化第一个图像
+            # see_num = 0
+            # plt.imshow(predict_height.squeeze(1)[see_num].cpu().detach().numpy(), cmap='plasma')
+            # plt.axis('off')  # 隐藏坐标轴
+            # plt.colorbar()
+            # plt.savefig('height.png')
+            # plt.close()
+            
+            # grd_img_left_resize = F.interpolate(grd_img_left, size=(H, W), mode='bilinear', align_corners=True)
+            # sat_img_resize = F.interpolate(sat_map, size=(A, A), mode='bilinear', align_corners=True)
+            # test_height = self.project_grd_to_map(
+            #     grd_img_left_resize, predict_height, shift_u, shift_v, heading, left_camera_k, A, ori_grdH, ori_grdW)
+            # show_height = test_height[see_num,:,:,:]    
+            # test_image = to_pil_image(show_height)
+            # test_image.save('grd_height_image.png')
+
+            # test_original, _, _ = self.project_sat_original(
+            #     grd_img_left_resize, shift_u, shift_v, heading, left_camera_k, A, ori_grdH, ori_grdW)
+            # show_original = test_original[see_num,:,:,:]    
+            # test_image = to_pil_image(show_original)
+            # test_image.save('grd_original_image.png')
+
+            # show_grd = grd_img_left_resize[see_num,:,:,:]
+            # test_image = to_pil_image(show_grd)
+            # test_image.save('grd_img.png')
+
+            # show_sat = sat_img_resize[see_num,:,:,:]
+            # test_image = to_pil_image(show_sat)
+            # test_image.save('sat_img.png')
+
+            grd_feat_proj = grd_height_feat * self.sat_embedding + grd_original_feat * (1 - self.sat_embedding)
 
             crop_H = int(A - self.args.shift_range_lat * 3 / meter_per_pixel)
             crop_W = int(A - self.args.shift_range_lon * 3 / meter_per_pixel)
@@ -275,7 +328,7 @@ class Model(nn.Module):
 
         losses = []
         for level in range(len(corr_maps)):
-            meter_per_pixel = self.meters_per_pixel[-2]
+            meter_per_pixel = self.meters_per_pixel[level]
 
             corr = corr_maps[level]
             B, corr_H, corr_W = corr.shape

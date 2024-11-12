@@ -17,14 +17,15 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', type=str, default='direct_map_v2_last_level')
     parser.add_argument('--epochs', type=int, default=5)
-    parser.add_argument('--batch_size', type=int, default=28)
+    parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--level', type=int, default=3, help='2, 3, 4, -1, -2, -3, -4')
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
     parser.add_argument('--shift_range_lat', type=float, default=20., help='meters')
     parser.add_argument('--shift_range_lon', type=float, default=20., help='meters')
     parser.add_argument('--predict_height', type=int, default=1., help='whether to predict height')
-    parser.add_argument('--test', type=int, default=0, help='test with trained model')
+    parser.add_argument('--test', type=int, default=1, help='test with trained model')
+    parser.add_argument('--root', type=str, default='/data/dataset/KITTI/', help='test with trained model')
 
     return parser.parse_args()
 
@@ -141,7 +142,7 @@ def train(model, lr, args, save_path):
         optimizer = optim.Adam(model.parameters(), lr=base_lr)
         optimizer.zero_grad()
 
-        train_loader = load_train_data(mini_batch)
+        train_loader = load_train_data(mini_batch, root=args.root)
         print('batch_size:', mini_batch, '\n num of batches:', len(train_loader))
 
         for Loop, Data in enumerate(train_loader, 0):
