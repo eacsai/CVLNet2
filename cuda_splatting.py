@@ -9,6 +9,10 @@ from diff_gaussian_rasterization import (
 from einops import einsum, rearrange, repeat
 from jaxtyping import Float
 from torch import Tensor
+from depth_predictor.conversions import depth_to_relative_disparity
+from gaussian.gaussians import homogenize_points
+
+
 
 def get_fov(intrinsics: Float[Tensor, "batch 3 3"]) -> Float[Tensor, "batch 2"]:
     intrinsics_inv = intrinsics.inverse()
@@ -69,9 +73,7 @@ def render_cuda(
     gaussian_opacities: Float[Tensor, "batch gaussian"],
     scale_invariant: bool = True,
     use_sh: bool = True,
-    cam_rot_delta: Float[Tensor, "batch 3"] | None = None,
-    cam_trans_delta: Float[Tensor, "batch 3"] | None = None,
-) -> tuple[Float[Tensor, "batch 3 height width"], Float[Tensor, "batch height width"]]:
+) -> Float[Tensor, "batch 3 height width"]:
     assert use_sh or gaussian_sh_coefficients.shape[-1] == 1
 
     # Make sure everything is in a range where numerical issues don't appear.
@@ -102,7 +104,6 @@ def render_cuda(
 
     all_images = []
     all_radii = []
-    all_depths = []
     for i in range(b):
         # Set up a tensor for the gradients of the screen-space means.
         mean_gradients = torch.zeros_like(gaussian_means[i], requires_grad=True)
@@ -120,7 +121,6 @@ def render_cuda(
             scale_modifier=1.0,
             viewmatrix=view_matrix[i],
             projmatrix=full_projection[i],
-            projmatrix_raw=projection_matrix[i],
             sh_degree=degree,
             campos=extrinsics[i, :3, 3],
             prefiltered=False,  # This matches the original usage.
@@ -130,20 +130,17 @@ def render_cuda(
 
         row, col = torch.triu_indices(3, 3)
 
-        image, radii, depth, opacity, n_touched = rasterizer(
+        image, radii = rasterizer(
             means3D=gaussian_means[i],
             means2D=mean_gradients,
             shs=shs[i] if use_sh else None,
             colors_precomp=None if use_sh else shs[i, :, 0, :],
             opacities=gaussian_opacities[i, ..., None],
             cov3D_precomp=gaussian_covariances[i, :, row, col],
-            theta=cam_rot_delta[i] if cam_rot_delta is not None else None,
-            rho=cam_trans_delta[i] if cam_trans_delta is not None else None,
         )
         all_images.append(image)
         all_radii.append(radii)
-        all_depths.append(depth.squeeze(0))
-    return torch.stack(all_images), torch.stack(all_depths)
+    return torch.stack(all_images)
 
 
 def render_cuda_orthographic(
@@ -239,5 +236,49 @@ def render_cuda_orthographic(
         all_radii.append(radii)
     return torch.stack(all_images)
 
-
 DepthRenderingMode = Literal["depth", "disparity", "relative_disparity", "log"]
+
+def render_depth_cuda(
+    extrinsics: Float[Tensor, "batch 4 4"],
+    intrinsics: Float[Tensor, "batch 3 3"],
+    near: Float[Tensor, " batch"],
+    far: Float[Tensor, " batch"],
+    image_shape: tuple[int, int],
+    gaussian_means: Float[Tensor, "batch gaussian 3"],
+    gaussian_covariances: Float[Tensor, "batch gaussian 3 3"],
+    gaussian_opacities: Float[Tensor, "batch gaussian"],
+    scale_invariant: bool = True,
+    mode: DepthRenderingMode = "depth",
+) -> Float[Tensor, "batch height width"]:
+    # Specify colors according to Gaussian depths.
+    camera_space_gaussians = einsum(
+        extrinsics.inverse(), homogenize_points(gaussian_means), "b i j, b g j -> b g i"
+    )
+    fake_color = camera_space_gaussians[..., 2]
+
+    if mode == "disparity":
+        fake_color = 1 / fake_color
+    elif mode == "relative_disparity":
+        fake_color = depth_to_relative_disparity(
+            fake_color, near[:, None], far[:, None]
+        )
+    elif mode == "log":
+        fake_color = fake_color.minimum(near[:, None]).maximum(far[:, None]).log()
+
+    # Render using depth as color.
+    b, _ = fake_color.shape
+    result = render_cuda(
+        extrinsics,
+        intrinsics,
+        near,
+        far,
+        image_shape,
+        torch.zeros((b, 3), dtype=fake_color.dtype, device=fake_color.device),
+        gaussian_means,
+        gaussian_covariances,
+        repeat(fake_color, "b g -> b g c ()", c=3),
+        gaussian_opacities,
+        scale_invariant=scale_invariant,
+        use_sh=False,
+    )
+    return result.mean(dim=1)

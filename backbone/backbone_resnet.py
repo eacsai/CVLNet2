@@ -31,19 +31,12 @@ class BackboneResnet(Backbone[BackboneResnetCfg]):
         super().__init__()
 
         assert d_in == 3
-
-        norm_layer = functools.partial(
-            nn.InstanceNorm2d,
-            affine=False,
-            track_running_stats=False,
-        )
-
-
+        self.num_layers = 4
         self.model = torch.hub.load("facebookresearch/dino:main", "dino_resnet50")
 
         # Set up projections
         self.projections = nn.ModuleDict({})
-        for index in range(1, 4):
+        for index in range(1, self.num_layers):
             key = f"layer{index}"
             block = getattr(self.model, key)
             conv_index = 1
@@ -67,7 +60,6 @@ class BackboneResnet(Backbone[BackboneResnetCfg]):
         # Merge the batch dimensions.
         b, c, h, w = img.shape
         x = img
-
         # Run the images through the resnet.
         x = self.model.conv1(x)
         x = self.model.bn1(x)
@@ -75,7 +67,7 @@ class BackboneResnet(Backbone[BackboneResnetCfg]):
         features = [self.projections["layer0"](x)]
 
         # Propagate the input through the resnet's layers.
-        for index in range(1, 4):
+        for index in range(1, self.num_layers):
             key = f"layer{index}"
             x = getattr(self.model, key)(x)
             features.append(self.projections[key](x))
@@ -92,4 +84,4 @@ class BackboneResnet(Backbone[BackboneResnetCfg]):
 
     @property
     def d_out(self) -> int:
-        return self.cfg.d_out
+        return 512
