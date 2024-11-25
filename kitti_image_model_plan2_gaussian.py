@@ -18,16 +18,21 @@ from jaxtyping import Float
 from torch import Tensor
 
 from gaussian.build_gaussians import build_covariance, map_pdf_to_opacity
-from cuda_splatting import render_cuda, render_depth_cuda
+# from cuda_splatting import render_cuda
+from nopo_cuda_splatting import render_cuda
 from ply_export import export_ply
 from backbone.backbone_dino import BackboneDino
 from depth_predictor.depth_predictor_monocular import DepthPredictorMonocular
 from gaussian.build_gaussians import *
 from gaussian.gaussian_adapter import get_world_rays, rotate_sh
+from vis_gaussian import render_projections
 
 to_pil_image = transforms.ToPILImage()
 
-deterministic = True
+deterministic = False
+
+def print_grad(grad):
+    print("Gradient shape:", grad.shape)
 
 @dataclass
 class Gaussians:
@@ -161,15 +166,15 @@ class Model(nn.Module):
         
         # Encode the context images.
         grd_feat = self.backbone(grd_img_left)
-        grd_feat = rearrange(grd_feat, "b c h w -> b h w c")
+        grd_feat = rearrange(grd_feat, "b c h w -> b h w c").contiguous()
         grd_feat = self.backbone_projection(grd_feat)
-        grd_feat = rearrange(grd_feat, "b h w c -> b c h w")
+        grd_feat = rearrange(grd_feat, "b h w c -> b c h w").contiguous()
         
         skip = self.high_resolution_skip(grd_img_left)
         grd_feat = grd_feat + skip
 
         # Sample depths from the resulting features.
-        grd_feat = rearrange(grd_feat, "b c h w -> b (h w) c")
+        grd_feat = rearrange(grd_feat, "b c h w -> b (h w) c").contiguous()  
         near = torch.ones(B).to(grd_feat.device) * 0.5
         far = torch.ones(B).to(grd_feat.device) * 100
         depths, densities = self.depth_predictor.forward(
@@ -182,7 +187,7 @@ class Model(nn.Module):
 
         # Convert the features and depths into Gaussians.
         xy_ray, _ = sample_image_grid((ori_grdH, ori_grdW), grd_feat.device)
-        xy_ray = rearrange(xy_ray, "h w xy -> (h w) () xy")
+        xy_ray = rearrange(xy_ray, "h w xy -> (h w) () xy").contiguous()
         gaussians = self.to_gaussians(grd_feat).unsqueeze(-2)
         # gaussians = rearrange(gaussians, "b (h w) c -> b h w c", h=ori_grdH, w=ori_grdW)
         offset_xy = gaussians[..., :2].sigmoid()
@@ -200,7 +205,7 @@ class Model(nn.Module):
         # densities = gaussians[..., 0].sigmoid().unsqueeze(-1)
 
         # coordinates = torch.stack([u, v, torch.ones_like(u, device=grd_feat.device)], dim=-1)
-        opacities = self.map_pdf_to_opacity(densities) / 1
+        opacities = self.map_pdf_to_opacity(densities) / 3
         raw_gaussians = gaussians[..., 2:]
         scales, rotations, sh = raw_gaussians.split((3, 4, 3 * self.d_sh), dim=-1)
 
@@ -226,12 +231,26 @@ class Model(nn.Module):
         # Normalize the quaternion features to yield a valid quaternion.
         rotations = rotations / (rotations.norm(dim=-1, keepdim=True) + 1e-8)
         c2w_rotations = extrinsics[..., :3, :3]
-        sh = rearrange(sh, "... (xyz d_sh) -> ... xyz d_sh", xyz=3)
+        sh = rearrange(sh, "... (xyz d_sh) -> ... xyz d_sh", xyz=3).contiguous()
         # TODO: handle the harmonics
         sh = sh.broadcast_to((*depths.shape, 3, self.d_sh)) * self.sh_mask.to(sh.device)
         harmonics = rotate_sh(sh, c2w_rotations[..., None, None, None, :, :])
         covariances = build_covariance(scales, rotations)
         rotations = rotations.broadcast_to((*scales.shape[:-1], 4))
+
+        background_color = torch.zeros(B, 3).float().to(grd_pts3d.device)
+        # color = render_cuda(
+        #     extrinsics,
+        #     camera_k,
+        #     near,
+        #     far,
+        #     (128, 512),
+        #     background_color,
+        #     final_gaussians.means,
+        #     final_gaussians.covariances,
+        #     final_gaussians.harmonics,
+        #     final_gaussians.opacities,
+        # )
         final_gaussians = Gaussians(
             rearrange(
                 grd_pts3d,
@@ -245,11 +264,12 @@ class Model(nn.Module):
                 harmonics,
                 "b r spp c d_sh -> b (r spp) c d_sh",
             ),
-            opacities.squeeze(-1)
+            rearrange(
+                opacities,
+                "b r spp -> b (r spp)",
+            ).contiguous()
         )
-
-        background_color = torch.zeros(B, 3).float().to(grd_pts3d.device)
-        color = render_cuda(
+        color, depth = render_cuda(
             extrinsics,
             camera_k,
             near,
@@ -260,29 +280,21 @@ class Model(nn.Module):
             final_gaussians.covariances,
             final_gaussians.harmonics,
             final_gaussians.opacities,
+            scale_invariant=True,
         )
-        # gs_depth = render_depth_cuda(
-        #     extrinsics,
-        #     camera_k,
-        #     near,
-        #     far,
-        #     (128, 512),
-        #     final_gaussians.means,
-        #     final_gaussians.covariances,
-        #     final_gaussians.opacities,
-        # )        
+        # color.register_hook(print_grad)       
         rgb_mse_loss = F.mse_loss(color, grd_img_left, reduction='mean')
-        # depth_l1_loss = F.l1_loss(depths.unsqueeze(-1), grd_depth, reduction='mean')
-        loss = rgb_mse_loss
-        test_img = to_pil_image(color[0])
+        depth_l1_loss = F.l1_loss(depth.unsqueeze(-1), grd_depth, reduction='mean')
+        loss = rgb_mse_loss * 100 + depth_l1_loss
+        test_img = to_pil_image(color[0].clip(min=0, max=1))
         test_img.save('test.png')
         test_img = to_pil_image(grd_img_left[0])
         test_img.save('gt.png')
-
+        render_projections(final_gaussians, (128,512), extra_label='test')
         # ply_path = Path(f"test.ply")
         # visualization_dump={}
-        # visualization_dump["scales"] = scales[:,:,0,:]
-        # visualization_dump["rotations"] = rotations[:,:,0,:]
+        # visualization_dump["scales"] = scales.reshape(B,-1,3)
+        # visualization_dump["rotations"] = rotations.reshape(B,-1,4)
         # export_ply(
         #     torch.eye(4),
         #     final_gaussians.means[0],
@@ -292,6 +304,23 @@ class Model(nn.Module):
         #     final_gaussians.opacities[0],
         #     ply_path,
         # )
+
+        # # 旋转矩阵 (绕 x 轴旋转 -90°)
+        # rotation = torch.tensor([
+        #     [1, 0,  0],
+        #     [0, 0, -1],
+        #     [0, 1,  0]
+        # ], dtype=torch.float32)
+
+        # # 平移向量 (0, 0, 0)
+        # translation = torch.tensor([0, 0, 0], dtype=torch.float32)
+
+        # # 构造齐次变换矩阵
+        # extrinsics = torch.eye(4, dtype=torch.float32)
+        # extrinsics[:3, :3] = rotation
+        # extrinsics[:3, 3] = translation
+        # extrinsics = extrinsics.unsqueeze(0).repeat(B, 1, 1)
+
         return loss
     def get_scale_multiplier(
         self,

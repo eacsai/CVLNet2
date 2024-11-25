@@ -64,7 +64,7 @@ def train(model, lr, args, save_path):
             # model.global_step = model.global_step + sat_map.shape[0]
             # 打印每个参数的梯度
             # for name, param in model.named_parameters():
-            #     print(f"Parameter: {name}, Gradient: {param.grad}")
+            #     print(f"Parameter: {name}, Gradient: {param.shape}")
             optimizer.step()
             optimizer.zero_grad()
 
