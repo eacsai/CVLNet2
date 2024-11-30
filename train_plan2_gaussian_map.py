@@ -10,7 +10,7 @@ import torch.optim as optim
 import os
 import scipy.io as scio
 
-from dataLoader.KITTI_dataset_forward import load_train_data, load_test1_data
+from dataLoader.KITTI_dataset_gaussian import load_train_data, load_test1_data
 from kitti_image_model_plan2_gaussian import Model
 
 def parse_args():

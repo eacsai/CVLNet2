@@ -252,53 +252,58 @@ def render_projections(
 
     projections = []
     look = ["x", "y", "z"]
-    for look_axis in range(3):
-        right_axis = (look_axis + 1) % 3
-        down_axis = (look_axis + 2) % 3
+    # for look_axis in range(3):
+    look_axis = 1
+    right_axis = (look_axis + 1) % 3
+    down_axis = (look_axis + 2) % 3
 
-        # Define the extrinsics for rendering.
-        extrinsics = torch.zeros((b, 4, 4), dtype=torch.float32, device=device)
-        extrinsics[:, right_axis, 0] = 1
-        extrinsics[:, down_axis, 1] = 1
-        extrinsics[:, look_axis, 2] = 1
-        extrinsics[:, right_axis, 3] = 0.5 * (
-            scene_minima[:, right_axis] + scene_maxima[:, right_axis]
-        )
-        extrinsics[:, down_axis, 3] = 0.5 * (
-            scene_minima[:, down_axis] + scene_maxima[:, down_axis]
-        )
-        extrinsics[:, look_axis, 3] = scene_minima[:, look_axis]
-        extrinsics[:, 3, 3] = 1
+    # Define the extrinsics for rendering.
+    extrinsics = torch.zeros((b, 4, 4), dtype=torch.float32, device=device)
+    extrinsics[:, right_axis, 0] = 1
+    extrinsics[:, down_axis, 1] = 1
+    extrinsics[:, look_axis, 2] = 1
+    extrinsics[:, right_axis, 3] = 0.5 * (
+        scene_minima[:, right_axis] + scene_maxima[:, right_axis]
+    )
+    extrinsics[:, down_axis, 3] = 0.5 * (
+        scene_minima[:, down_axis] + scene_maxima[:, down_axis]
+    )
 
-        # Define the intrinsics for rendering.
-        extents = scene_maxima - scene_minima
-        far = extents[:, look_axis]
-        near = torch.zeros_like(far)
-        width = extents[:, right_axis]
-        height = extents[:, down_axis]
+    extrinsics[:, look_axis, 3] = scene_minima[:, look_axis]
+    extrinsics[:, 3, 3] = 1
 
-        projection = render_cuda_orthographic(
-            extrinsics,
-            width,
-            height,
-            near,
-            far,
-            resolution,
-            torch.zeros((b, 3), dtype=torch.float32, device=device),
-            gaussians.means[:1],
-            gaussians.covariances[:1],
-            gaussians.harmonics[:1],
-            gaussians.opacities[:1],
-            fov_degrees=80.0,
-        )
-        if draw_label:
-            right_axis_name = "XYZ"[right_axis]
-            down_axis_name = "XYZ"[down_axis]
-            label = f"{right_axis_name}{down_axis_name} Projection {extra_label}"
-            projection = torch.stack([add_label(x, label) for x in projection])
+    # Define the intrinsics for rendering.
+    extents = scene_maxima - scene_minima
+    far = extents[:, look_axis]
+    near = torch.zeros_like(far)
+    width = extents[:, right_axis]
+    height = extents[:, down_axis]
 
-        projections.append(projection)
-        projection_img = to_pil_image(projection[0].clip(min=0, max=1))
-        projection_img.save(f"{look[look_axis]}_{extra_label}_projecton.png")
+    extrinsics[:, right_axis, 3] = 0
+    extrinsics[:, down_axis, 3] = 0
+
+    projection = render_cuda_orthographic(
+        extrinsics,
+        width,
+        height,
+        near,
+        far,
+        resolution,
+        torch.zeros((b, 3), dtype=torch.float32, device=device),
+        gaussians.means[:1],
+        gaussians.covariances[:1],
+        gaussians.harmonics[:1],
+        gaussians.opacities[:1],
+        fov_degrees=80.0,
+    )
+    if draw_label:
+        right_axis_name = "XYZ"[right_axis]
+        down_axis_name = "XYZ"[down_axis]
+        label = f"{right_axis_name}{down_axis_name} Projection {extra_label}"
+        projection = torch.stack([add_label(x, label) for x in projection])
+
+    projections.append(projection)
+    projection_img = to_pil_image(projection[0].clip(min=0, max=1))
+    projection_img.save(f"{look[look_axis]}_{extra_label}_projecton.png")
 
     return torch.stack(pad(projections), dim=1)

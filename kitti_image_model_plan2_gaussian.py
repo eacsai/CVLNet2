@@ -285,12 +285,12 @@ class Model(nn.Module):
         # color.register_hook(print_grad)       
         rgb_mse_loss = F.mse_loss(color, grd_img_left, reduction='mean')
         depth_l1_loss = F.l1_loss(depth.unsqueeze(-1), grd_depth, reduction='mean')
-        loss = rgb_mse_loss * 100 + depth_l1_loss
+        loss = rgb_mse_loss * 50 + depth_l1_loss
         test_img = to_pil_image(color[0].clip(min=0, max=1))
         test_img.save('test.png')
         test_img = to_pil_image(grd_img_left[0])
         test_img.save('gt.png')
-        render_projections(final_gaussians, (128,512), extra_label='test')
+        render_projections(final_gaussians, (256,256), extra_label='test')
         # ply_path = Path(f"test.ply")
         # visualization_dump={}
         # visualization_dump["scales"] = scales.reshape(B,-1,3)
