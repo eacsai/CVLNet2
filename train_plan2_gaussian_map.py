@@ -1,7 +1,7 @@
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0, 1'
 
 import torch
 import numpy as np
@@ -9,6 +9,7 @@ import argparse
 import torch.optim as optim
 import os
 import scipy.io as scio
+import torch.nn as nn
 
 from dataLoader.KITTI_dataset_gaussian import load_train_data, load_test1_data
 from kitti_image_model_plan2_gaussian import Model
@@ -17,9 +18,9 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', type=str, default='gaussian_map')
     parser.add_argument('--epochs', type=int, default=100) 
-    parser.add_argument('--batch_size', type=int, default=6)
+    parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--warm_up_steps', type=float, default=2000)    
+    parser.add_argument('--warm_up_steps', type=float, default=10000)    
     parser.add_argument('--level', type=int, default=3, help='2, 3, 4, -1, -2, -3, -4')
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
     parser.add_argument('--shift_range_lat', type=float, default=20., help='meters')
@@ -65,8 +66,7 @@ def train(model, lr, args, save_path):
             optimizer.zero_grad()
             # corr_loss, mse_loss = model.feature_map(sat_map, grd_left_imgs, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
             # loss = corr_loss + mse_loss
-            model.gaussian_init(sat_map, grd_left_imgs, project_map, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
-            loss = model.gaussian_map()
+            loss = model(sat_map, grd_left_imgs, project_map, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
             loss.backward()
             # 打印每个参数的梯度
             # for name, param in model.named_parameters():
@@ -76,10 +76,10 @@ def train(model, lr, args, save_path):
 
             # 更新学习率
             scheduler.step()
-            model.global_step = model.global_step + sat_map.shape[0]
+            # model.module.global_step = model.global_step + sat_map.shape[0]
 
             if Loop % 10 == 9:  #
-                model.gaussian_map(deterministic=True)
+                # model.gaussian_map(deterministic=True)
                 print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) + ' Loss: ' + str(loss.item()))
 
         print('Save Model ...')

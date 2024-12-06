@@ -9,8 +9,8 @@ from einops import rearrange
 from string import ascii_letters, digits, punctuation
 import numpy as np
 from torchvision import transforms
-from nopo_cuda_splatting import render_cuda_orthographic
-
+from gaussian.latent_splat import render_cuda_orthographic
+# from gaussian.nopo_cuda_splatting import render_cuda_orthographic
 to_pil_image = transforms.ToPILImage()
 
 
@@ -31,9 +31,9 @@ EXPECTED_CHARACTERS = digits + punctuation + ascii_letters
 class Gaussians:
     means: Float[Tensor, "batch gaussian dim"]
     covariances: Float[Tensor, "batch gaussian dim dim"]
-    harmonics: Float[Tensor, "batch gaussian 3 d_sh"]
     opacities: Float[Tensor, "batch gaussian"]
-
+    color_harmonics: Float[Tensor, "batch gaussian 3 d_sh"]
+    feature_harmonics: Float[Tensor, "batch gaussian channels d_feature_sh"] | None = None 
 
 def _sanitize_color(color: Color) -> Float[Tensor, "#channel"]:
     # Convert tensor to list (or individual item).
@@ -262,12 +262,12 @@ def render_projections(
     extrinsics[:, right_axis, 0] = 1
     extrinsics[:, down_axis, 1] = 1
     extrinsics[:, look_axis, 2] = 1
-    extrinsics[:, right_axis, 3] = 0.5 * (
-        scene_minima[:, right_axis] + scene_maxima[:, right_axis]
-    )
-    extrinsics[:, down_axis, 3] = 0.5 * (
-        scene_minima[:, down_axis] + scene_maxima[:, down_axis]
-    )
+    # extrinsics[:, right_axis, 3] = 0.5 * (
+    #     scene_minima[:, right_axis] + scene_maxima[:, right_axis]
+    # )
+    # extrinsics[:, down_axis, 3] = 0.5 * (
+    #     scene_minima[:, down_axis] + scene_maxima[:, down_axis]
+    # )
 
     extrinsics[:, look_axis, 3] = scene_minima[:, look_axis]
     extrinsics[:, 3, 3] = 1
@@ -276,11 +276,12 @@ def render_projections(
     extents = scene_maxima - scene_minima
     far = extents[:, look_axis]
     near = torch.zeros_like(far)
-    width = extents[:, right_axis]
-    height = extents[:, down_axis]
-
-    extrinsics[:, right_axis, 3] = 0
-    extrinsics[:, down_axis, 3] = 0
+    # width = extents[:, right_axis]
+    # height = extents[:, down_axis]
+    width = torch.tensor(resolution[0] * 0.2, dtype=torch.float32, device=device)
+    height = torch.tensor(resolution[1] * 0.2, dtype=torch.float32, device=device)
+    # extrinsics[:, right_axis, 3] = 0
+    # extrinsics[:, down_axis, 3] = 0
 
     projection = render_cuda_orthographic(
         extrinsics,
@@ -292,18 +293,20 @@ def render_projections(
         torch.zeros((b, 3), dtype=torch.float32, device=device),
         gaussians.means[:1],
         gaussians.covariances[:1],
-        gaussians.harmonics[:1],
         gaussians.opacities[:1],
-        fov_degrees=80.0,
+        gaussians.color_harmonics[:1],
+        gaussians.feature_harmonics[:1],
+        fov_degrees=1.0,
     )
+    color = projection.color
     if draw_label:
         right_axis_name = "XYZ"[right_axis]
         down_axis_name = "XYZ"[down_axis]
         label = f"{right_axis_name}{down_axis_name} Projection {extra_label}"
-        projection = torch.stack([add_label(x, label) for x in projection])
+        color = torch.stack([add_label(x, label) for x in color])
 
-    projections.append(projection)
-    projection_img = to_pil_image(projection[0].clip(min=0, max=1))
+    projections.append(color)
+    projection_img = to_pil_image(color[0].clip(min=0, max=1))
     projection_img.save(f"{look[look_axis]}_{extra_label}_projecton.png")
 
     return torch.stack(pad(projections), dim=1)
