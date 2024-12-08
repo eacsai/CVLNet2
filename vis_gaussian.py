@@ -9,7 +9,9 @@ from einops import rearrange
 from string import ascii_letters, digits, punctuation
 import numpy as np
 from torchvision import transforms
-from gaussian.latent_splat import render_cuda_orthographic
+from gaussian.decoder import DecoderOutput
+from gaussian.diagonal_gaussian_distribution import DiagonalGaussianDistribution
+from gaussian.latent_splat import render_cuda_orthographic, RenderOutput
 # from gaussian.nopo_cuda_splatting import render_cuda_orthographic
 to_pil_image = transforms.ToPILImage()
 
@@ -250,7 +252,6 @@ def render_projections(
         minima, maxima, margin=margin
     )
 
-    projections = []
     look = ["x", "y", "z"]
     # for look_axis in range(3):
     look_axis = 1
@@ -283,7 +284,7 @@ def render_projections(
     # extrinsics[:, right_axis, 3] = 0
     # extrinsics[:, down_axis, 3] = 0
 
-    projection = render_cuda_orthographic(
+    projection: RenderOutput = render_cuda_orthographic(
         extrinsics,
         width,
         height,
@@ -304,9 +305,23 @@ def render_projections(
         down_axis_name = "XYZ"[down_axis]
         label = f"{right_axis_name}{down_axis_name} Projection {extra_label}"
         color = torch.stack([add_label(x, label) for x in color])
+    out = render_to_decoder_output(projection, b)
+    return out
 
-    projections.append(color)
-    projection_img = to_pil_image(color[0].clip(min=0, max=1))
-    projection_img.save(f"{look[look_axis]}_{extra_label}_projecton.png")
-
-    return torch.stack(pad(projections), dim=1)
+def render_to_decoder_output(
+    render_output: RenderOutput,
+    b: int,
+) -> DecoderOutput:
+    if render_output.feature is not None:
+        features = render_output.feature
+        # NOTE background feature = 0 = mean = logvar (of normal distribution)
+        mean, logvar = (features, (1-rearrange(render_output.mask.detach(), "b h w -> b () h w", b=b)).log().expand_as(features))
+        feature_posterior = DiagonalGaussianDistribution(mean, logvar)
+    else:
+        feature_posterior = None
+    return DecoderOutput(
+        color=render_output.color if render_output.color is not None else None,
+        feature_posterior=feature_posterior,
+        mask=render_output.mask,
+        depth=render_output.depth
+    )

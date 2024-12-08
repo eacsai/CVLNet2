@@ -10,7 +10,7 @@ from einops import einsum, rearrange, repeat
 from jaxtyping import Float
 from torch import Tensor
 from depth_predictor.conversions import depth_to_relative_disparity
-from gaussian.gaussians import homogenize_points
+from gaussian.build_gaussians import homogenize_points
 
 
 
