@@ -243,70 +243,72 @@ def render_projections(
     extra_label: str = "",
 ) -> Float[Tensor, "batch 3 3 height width"]:
     device = gaussians.means.device
-    b, _, _ = gaussians.means[:1].shape
+    B, _, _ = gaussians.means.shape
+    color_out = []
+    feature_out = []
+    for b in range(B):
+        # Compute the minima and maxima of the scene.
+        minima = gaussians.means[b:b+1].min(dim=1).values
+        maxima = gaussians.means[b:b+1].max(dim=1).values
+        scene_minima, scene_maxima = compute_equal_aabb_with_margin(
+            minima, maxima, margin=margin
+        )
+
+        look = ["x", "y", "z"]
+        # for look_axis in range(3):
+        look_axis = 1
+        right_axis = (look_axis + 1) % 3
+        down_axis = (look_axis + 2) % 3
+
+        # Define the extrinsics for rendering.
+        extrinsics = torch.zeros((1, 4, 4), dtype=torch.float32, device=device)
+        extrinsics[:, right_axis, 0] = 1
+        extrinsics[:, down_axis, 1] = 1
+        extrinsics[:, look_axis, 2] = 1
+        # extrinsics[:, right_axis, 3] = 0.5 * (
+        #     scene_minima[:, right_axis] + scene_maxima[:, right_axis]
+        # )
+        # extrinsics[:, down_axis, 3] = 0.5 * (
+        #     scene_minima[:, down_axis] + scene_maxima[:, down_axis]
+        # )
+
+        extrinsics[:, look_axis, 3] = scene_minima[:, look_axis]
+        extrinsics[:, 3, 3] = 1
+
+        # Define the intrinsics for rendering.
+        extents = scene_maxima - scene_minima
+        far = extents[:, look_axis]
+        near = torch.zeros_like(far)
+        # width = extents[:, right_axis]
+        # height = extents[:, down_axis]
+        width = 101.0
+        height = 101.0
+        # extrinsics[:, right_axis, 3] = 0
+        # extrinsics[:, down_axis, 3] = 0
+
+        projection: RenderOutput = render_cuda_orthographic(
+            extrinsics,
+            width,
+            height,
+            near,
+            far,
+            resolution,
+            torch.zeros((1, 3), dtype=torch.float32, device=device),
+            gaussians.means[b:b+1],
+            gaussians.covariances[b:b+1],
+            gaussians.opacities[b:b+1],
+            gaussians.color_harmonics[b:b+1],
+            gaussians.feature_harmonics[b:b+1],
+            fov_degrees=1.0,
+        )
+
+        out = render_to_decoder_output(projection, 1)
+        color = out.color
+        feature = out.feature_posterior.sample()
+        color_out.append(color)
+        feature_out.append(feature)
     
-    # Compute the minima and maxima of the scene.
-    minima = gaussians.means[:1].min(dim=1).values
-    maxima = gaussians.means[:1].max(dim=1).values
-    scene_minima, scene_maxima = compute_equal_aabb_with_margin(
-        minima, maxima, margin=margin
-    )
-
-    look = ["x", "y", "z"]
-    # for look_axis in range(3):
-    look_axis = 1
-    right_axis = (look_axis + 1) % 3
-    down_axis = (look_axis + 2) % 3
-
-    # Define the extrinsics for rendering.
-    extrinsics = torch.zeros((b, 4, 4), dtype=torch.float32, device=device)
-    extrinsics[:, right_axis, 0] = 1
-    extrinsics[:, down_axis, 1] = 1
-    extrinsics[:, look_axis, 2] = 1
-    # extrinsics[:, right_axis, 3] = 0.5 * (
-    #     scene_minima[:, right_axis] + scene_maxima[:, right_axis]
-    # )
-    # extrinsics[:, down_axis, 3] = 0.5 * (
-    #     scene_minima[:, down_axis] + scene_maxima[:, down_axis]
-    # )
-
-    extrinsics[:, look_axis, 3] = scene_minima[:, look_axis]
-    extrinsics[:, 3, 3] = 1
-
-    # Define the intrinsics for rendering.
-    extents = scene_maxima - scene_minima
-    far = extents[:, look_axis]
-    near = torch.zeros_like(far)
-    # width = extents[:, right_axis]
-    # height = extents[:, down_axis]
-    width = torch.tensor(resolution[0] * 0.2, dtype=torch.float32, device=device)
-    height = torch.tensor(resolution[1] * 0.2, dtype=torch.float32, device=device)
-    # extrinsics[:, right_axis, 3] = 0
-    # extrinsics[:, down_axis, 3] = 0
-
-    projection: RenderOutput = render_cuda_orthographic(
-        extrinsics,
-        width,
-        height,
-        near,
-        far,
-        resolution,
-        torch.zeros((b, 3), dtype=torch.float32, device=device),
-        gaussians.means[:1],
-        gaussians.covariances[:1],
-        gaussians.opacities[:1],
-        gaussians.color_harmonics[:1],
-        gaussians.feature_harmonics[:1],
-        fov_degrees=1.0,
-    )
-    color = projection.color
-    if draw_label:
-        right_axis_name = "XYZ"[right_axis]
-        down_axis_name = "XYZ"[down_axis]
-        label = f"{right_axis_name}{down_axis_name} Projection {extra_label}"
-        color = torch.stack([add_label(x, label) for x in color])
-    out = render_to_decoder_output(projection, b)
-    return out
+    return torch.cat(color_out, dim=0), torch.cat(feature_out, dim=0)
 
 def render_to_decoder_output(
     render_output: RenderOutput,

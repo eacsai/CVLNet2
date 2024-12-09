@@ -8,7 +8,6 @@ import torch.nn.functional as F
 from torchvision import transforms
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
-from pathlib import Path
 from fractions import Fraction
 from typing import Iterable, Tuple
 from torchvision.transforms.functional import resize
@@ -18,13 +17,8 @@ from itertools import chain
 from jaxtyping import Float
 from torch import Tensor
 from lpips import LPIPS
-from cuda_splatting import render_cuda
-from gaussian.latent_splat import render_cuda, RenderOutput
-# from gaussian.nopo_cuda_splatting import render_cuda
 
 from ply_export import export_ply
-from backbone.backbone_dino import BackboneDino
-from depth_predictor.depth_predictor_monocular import DepthPredictorMonocular
 from gaussian.build_gaussians import *
 from vis_gaussian import render_projections
 from loss.lpips import convert_to_buffer
@@ -33,6 +27,10 @@ from gaussian.autoencoder_kl import AutoencoderKL
 from gaussian.pix2pix import DiscriminatorPatchGan
 from gaussian.encoder import GaussianEncoder, VariationalGaussians
 from gaussian.decoder import GrdDecoder
+from gaussian.local_loss import LocalLoss
+import data_utils
+from VGG import VGGUnet, L2_norm, Encoder, Decoder
+
 
 to_pil_image = transforms.ToPILImage()
 # original_raw_Lpips_step = 50000
@@ -61,10 +59,9 @@ def get_integer(f: Fraction) -> int:
     return f.numerator
 
 class Model(nn.Module):
-    def __init__(self, args, device, isTrain = True):  # device='cuda:0',
+    def __init__(self, args, device, mode = 'gaussian'):  # device='cuda:0',
         super(Model, self).__init__()
         self.device = device
-        self.global_step = 0
         self.args = args
         self.d_color_sh = 25
         self.d_feature_sh = 9
@@ -73,8 +70,15 @@ class Model(nn.Module):
         generator_lr = 1.5e-4
         autoencoder_lr = 4.5e-6 * args.batch_size
         discriminator_lr = 4.5e-6 * args.batch_size
+        local_lr = 1e-4
         self.supersampling_factor = 8
         self.save_path = './ModelsGaussian/' + args.name
+        self.level = args.level
+
+        self.meters_per_pixel = []
+        meter_per_pixel = data_utils.get_meter_per_pixel()
+        for level in range(4):
+            self.meters_per_pixel.append(meter_per_pixel * (2 ** (3 - level)))
 
         if not os.path.exists(self.save_path):
             os.makedirs(self.save_path)
@@ -82,9 +86,13 @@ class Model(nn.Module):
         self.gaussian_encoder = GaussianEncoder()
         self.grd_decoder = GrdDecoder()
         self.autoencoder = AutoencoderKL()
+        # self.sat_encoder = AutoencoderKL()
+        self.sat_encoder = VGGUnet(self.level)
+        self.grd_encoder = VGGUnet(self.level)
         self.discriminator = DiscriminatorPatchGan()
-        
+
         self.lpips = LPIPS(net="vgg")
+        self.local_loss = LocalLoss(args.shift_range_lat, args.shift_range_lon, args.rotation_range)
         convert_to_buffer(self.lpips, persistent=False)
 
         self.generator_optimizer = optim.Adam([
@@ -114,11 +122,22 @@ class Model(nn.Module):
             weight_decay=0,       # 权重衰减
             amsgrad=False         # 是否使用 AMSGrad 变体
         )
-        if isTrain:
-            self.model_names = ['gaussian_encoder', 'grd_decoder', 'autoencoder', 'discriminator']
-        else:
-            self.model_names = ['gaussian_encoder', 'grd_decoder', 'autoencoder']
-    
+
+        self.local_optimizer = optim.Adam(
+            params= chain(self.sat_encoder.parameters(), self.local_loss.parameters(), self.grd_encoder.parameters()),  # 参数组
+            lr=local_lr,
+        )
+
+        if mode=='gaussian':
+            self.global_step = 0
+            self.save_model_names = self.load_model_names = ['gaussian_encoder', 'grd_decoder', 'autoencoder', 'discriminator']
+        elif mode=='local':
+            self.global_step = 1000000
+            self.load_model_names = ['gaussian_encoder', 'grd_decoder', 'autoencoder']
+            self.save_model_names = ['gaussian_encoder_loc', 'grd_decoder_loc', 'autoencoder_loc', 'local_loss', 'sat_encoder', "grd_encoder"]
+            self.load_networks('5')
+            self.set_requires_grad(self.discriminator, False)
+
     def grd_projection(self, grd_img_left, grd_depth, left_camera_k, deterministic=False) -> DecoderOutput:
         # initial
         self.camera_k = left_camera_k.clone()
@@ -144,7 +163,7 @@ class Model(nn.Module):
             self.variational in ("gaussians", "none"),
         )
         decoder_out: DecoderOutput = self.grd_decoder.forward(
-            self.gaussians.sample() if self.variational in ("gaussians", "none") else gaussians.flatten(),     # Sample from variational Gaussians
+            self.gaussians.sample() if self.variational in ("gaussians", "none") else self.gaussians.flatten(),     # Sample from variational Gaussians
             self.extrinsics,
             self.camera_k,
             near,
@@ -156,32 +175,31 @@ class Model(nn.Module):
         return decoder_out
 
     def sat_prjection(self):
-        decoder_out: DecoderOutput = render_projections(self.gaussians.sample(), (256,256), extra_label='prob')
-        latent = decoder_out.feature_posterior.sample()
+        color, latent = render_projections(self.gaussians.sample(), (512,512), extra_label='prob')
         z = self.rescale(latent, Fraction(1, self.supersampling_factor))
-        skip_z = torch.cat((decoder_out.color, latent), dim=-3)
+        skip_z = torch.cat((color, latent), dim=-3)
         if self.global_step >= sat_prjection_step:
             dec = self.autoencoder.decode(z, skip_z)
-            self.refine_img = dec
-        else:
-            dec = None
-        if dec is not None:
             sat_img = dec
         else:
-            sat_img = decoder_out.color
-        projection_img = to_pil_image(sat_img[0].clip(min=0, max=1))
-        projection_img.save(f"sat_projecton.png")
-    
-    def gaussian_generator(self, out: DecoderOutput):
+            dec = None
+            sat_img = color
+
+        if self.global_step % 10 == 0:
+            projection_img = to_pil_image(sat_img[0].clip(min=0, max=1))
+            projection_img.save(f"sat_projecton_vae.png")
+        return dec
+
+    def gaussian_generator(self, out: DecoderOutput, use_generator=True):
         # color.register_hook(print_grad)   
         latent = out.feature_posterior.sample()
         z = self.rescale(latent, Fraction(1, self.supersampling_factor))
         skip_z = torch.cat((out.color, latent), dim=-3)
-        if self.global_step >= L1_step:
-            dec = self.autoencoder.decode(z, skip_z)
-            self.refine_img = dec
+        if self.global_step >= L1_step and use_generator:
+            dec, _ = self.autoencoder.decode(z, skip_z)
         else:
             dec = None
+        self.refine_img = dec
         # render_loss    
         rgb_mse_loss = F.mse_loss(out.color, self.grd_img_left, reduction='mean')
         depth_l1_loss = F.l1_loss(out.depth.unsqueeze(-1), self.grd_depth, reduction='mean')
@@ -190,40 +208,41 @@ class Model(nn.Module):
         else:
             raw_lpips_loss = torch.tensor(0, dtype=torch.float32, device=out.color.device)
         
+        self.render_loss = rgb_mse_loss * 10 + depth_l1_loss + raw_lpips_loss.mean() * 0.5
         # refine_loss
-        if self.global_step >= L1_step:
-            refine_l1_loss = F.l1_loss(dec, self.grd_img_left, reduction='mean')
+        if self.global_step >= L1_step and use_generator:
+            refine_l1_loss = F.l1_loss(self.refine_img, self.grd_img_left, reduction='mean')
         else:
             refine_l1_loss = torch.tensor(0, dtype=torch.float32, device=out.color.device)
-        if self.global_step >= refine_Lpips_step:
-            refine_lpips_loss = self.lpips.forward(dec, self.grd_img_left,  normalize=True)
+        if self.global_step >= refine_Lpips_step and use_generator:
+            refine_lpips_loss = self.lpips.forward(self.refine_img, self.grd_img_left,  normalize=True)
         else:
             refine_lpips_loss = torch.tensor(0, dtype=torch.float32, device=out.color.device)
 
-        refine_loss = refine_l1_loss + refine_lpips_loss.mean()
+        self.refine_loss = refine_l1_loss + refine_lpips_loss.mean()
         # generator_loss
-        if self.global_step >= discriminator_loss_active_step:
+        if self.global_step >= discriminator_loss_active_step and use_generator:
             logits_fake = self.discriminator(self.refine_img)
             generator_loss = -logits_fake.mean()
             last_layer_weights = self.last_layer_weight()
-            adaptive_weight = self.get_adaptive_weight(refine_loss, generator_loss, last_layer_weights) * 0.5
+            adaptive_weight = self.get_adaptive_weight(self.refine_los, generator_loss, last_layer_weights) * 0.5
         else:
             generator_loss = torch.tensor(0, dtype=torch.float32, device=out.color.device)
             adaptive_weight = torch.tensor(0, dtype=torch.float32, device=out.color.device)
         
-        loss = rgb_mse_loss * 10 + depth_l1_loss + raw_lpips_loss.mean() * 0.5 + refine_loss + generator_loss * adaptive_weight
+        loss = self.render_loss + self.refine_loss + generator_loss * adaptive_weight
         
         if dec is not None:
             test_img = to_pil_image(dec[0].clip(min=0, max=1))
         else:
             test_img = to_pil_image(out.color[0].clip(min=0, max=1))
-        test_img.save('probabilistic_test.png')
-        test_img = to_pil_image(self.grd_img_left[0])
-        test_img.save('gt.png')
+        test_img.save('probabilistic_vae.png')
+        # test_img = to_pil_image(self.grd_img_left[0])
+        # test_img.save('gt.png')
         return loss
 
-    def forward(self, sat_map, grd_img_left, project_map, grd_depth, left_camera_k, gt_shift_u=None, gt_shift_v=None, gt_heading=None, mode='train'):
-        if mode == 'train':
+    def forward(self, sat_map, grd_img_left, project_map, grd_depth, left_camera_k, gt_shift_u=None, gt_shift_v=None, gt_heading=None, mode='local'):
+        if mode == 'gaussian':
             # train the grd generator
             self.set_requires_grad(self.discriminator, False)
             self.generator_optimizer.zero_grad()
@@ -258,28 +277,55 @@ class Model(nn.Module):
             self.global_step = self.global_step + sat_map.shape[0]
             self.loss = generator_loss + discriminator_loss
             return self.loss
-        else:
-            self.eval()
-            # test
-            if mode == 'test':
-                self.load_networks('latest')
-            with torch.no_grad():
-                decoder_grd = self.grd_projection(grd_img_left, grd_depth, left_camera_k)
-                self.sat_prjection()
-                return torch.tensor(0, dtype=torch.float32, device=grd_img_left.device)
-            self.train()
+        
+        elif mode == 'local':
+            self.local_optimizer.zero_grad()
+            self.generator_optimizer.zero_grad()
 
+            decoder_grd = self.grd_projection(grd_img_left, grd_depth, left_camera_k)
+            # render_loss = self.gaussian_generator(decoder_grd, use_generator=False)
+            
+            grd_map = self.sat_prjection()
+            grd_feat_list, grd_conf_list = self.grd_encoder(grd_map)
+            grd_feat = grd_feat_list[-1]
+            sat_feat_list, sat_conf_list = self.sat_encoder(sat_map)
+            sat_feat = sat_feat_list[-1]
+            local_loss = self.local_loss(grd_feat, sat_feat, gt_shift_u, gt_shift_v, gt_heading, mode='train')
+            # total_loss = render_loss + local_loss
+            total_loss = local_loss
+            total_loss.backward()
+
+            # optimize the generator
+            for param_group in self.generator_optimizer.param_groups:
+                torch.nn.utils.clip_grad_norm_(param_group['params'], max_norm=0.5)
+            self.generator_optimizer.step()
+            # optimize the local loss
+            self.local_optimizer.step()
+            self.global_step = self.global_step + sat_map.shape[0]
+            self.loss = local_loss
+            return self.loss
+        
+        elif mode == 'test':
+            self.grd_projection(grd_img_left, grd_depth, left_camera_k)
+            grd_map = self.sat_prjection()
+            grd_feat_list, grd_conf_list = self.grd_encoder(grd_map)
+            grd_feat = grd_feat_list[-1]
+            sat_feat_list, sat_conf_list = self.sat_encoder(sat_map)
+            sat_feat = sat_feat_list[-1]
+            pred_u1, pred_v1 = self.local_loss(grd_feat, sat_feat, gt_shift_u, gt_shift_v, gt_heading, mode='test')
+            return pred_u1, pred_v1
+    
     def save_networks(self, epoch):
-        for name in self.model_names:
+        for name in self.save_model_names:
             save_filename = f'{name}_{epoch}.pth'
             save_path = os.path.join(self.save_path, save_filename)
-            net = getattr(self, name)
+            net = getattr(self, name.replace('_loc', ''))
             torch.save(net.cpu().state_dict(), save_path)
             net.to(self.device)
 
     # load models from the disk
     def load_networks(self, which_epoch):
-        for name in self.model_names:
+        for name in self.load_model_names:
             if isinstance(name, str):
                 load_filename = f'{name}_{which_epoch}.pth'
                 load_path = os.path.join(self.save_path, load_filename)
@@ -289,7 +335,7 @@ class Model(nn.Module):
                 print('loading the model from %s' % load_path)
                 # if you are using PyTorch newer than 0.4 (e.g., built from
                 # GitHub source), you can remove str() on self.device
-                state_dict = torch.load(load_path, map_location=str(self.device))
+                state_dict = torch.load(load_path, map_location=str(self.device), weights_only=True)
                 if hasattr(state_dict, '_metadata'):
                     del state_dict._metadata
 

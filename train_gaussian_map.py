@@ -1,7 +1,7 @@
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0, 1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 import torch
 import numpy as np
@@ -13,15 +13,15 @@ import torch.nn as nn
 from itertools import chain
 
 from dataLoader.KITTI_dataset_gaussian import load_train_data, load_test1_data
-from kitti_image_model_plan2_gaussian import Model
+from kitti_modal_gaussian import Model
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', type=str, default='gaussian_map')
+    parser.add_argument('--name', type=str, default='gaussian_map_pure')
     parser.add_argument('--epochs', type=int, default=100) 
-    parser.add_argument('--batch_size', type=int, default=2)
-    parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--warm_up_steps', type=float, default=10000)    
+    parser.add_argument('--batch_size', type=int, default=5)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--warm_up_steps', type=float, default=2000)    
     parser.add_argument('--level', type=int, default=3, help='2, 3, 4, -1, -2, -3, -4')
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
     parser.add_argument('--shift_range_lat', type=float, default=20., help='meters')
@@ -33,7 +33,7 @@ def parse_args():
     return parser.parse_args()
 
 def getSavePath(args):
-    save_path = './ModelsKitti/2DoF/' + args.name
+    save_path = './ModelsGaussian/' + args.name
 
     # if args.use_uncertainty:
     #     save_path = save_path + '_Uncertainty'
@@ -76,7 +76,6 @@ def test1(model, args, save_path, epoch):
     gt_lats = np.concatenate(gt_lats, axis=0)
     scio.savemat(os.path.join(save_path, 'test1_result.mat'), {'gt_lons': gt_lons, 'gt_lats': gt_lats,
                                                          'pred_lats': pred_lats, 'pred_lons': pred_lons})
-
     distance = np.sqrt((pred_lons - gt_lons) ** 2 + (pred_lats - gt_lats) ** 2)  # [N]
 
     init_dis = np.sqrt(gt_lats ** 2 + gt_lons ** 2)
@@ -136,16 +135,33 @@ def test1(model, args, save_path, epoch):
     model.train()
     return
 
-def train(model, args):
+def train(model, lr, args, save_path):
     for epoch in range(args.epochs):
-        
+        base_lr = lr
+        base_lr = base_lr * ((1.0 - float(epoch) / 100.0) ** (1.0))
+
+        optimizer = optim.Adam(model.parameters(), lr=base_lr)
+        scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=1 / args.warm_up_steps,
+            end_factor=1.0,
+            total_iters=args.warm_up_steps,
+        )
+        optimizer.zero_grad()
+
         train_loader = load_train_data(mini_batch, root=args.root)
         print('batch_size:', mini_batch, '\n num of batches:', len(train_loader))
 
         for Loop, Data in enumerate(train_loader, 0):
             sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_height, project_map, sat_height, grd_depth = [item.to(device) for item in Data[:-1]]
 
-            model(sat_map, grd_left_imgs, project_map, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='local')
+            optimizer.zero_grad()
+            loss = model(sat_map, grd_left_imgs, project_map, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
+            
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
             # 打印每个参数的梯度
             # for name, param in model.named_parameters():
             #     if param.grad is not None:
@@ -155,12 +171,12 @@ def train(model, args):
 
             if Loop % 10 == 9:  #
                 # model.gaussian_map(deterministic=True)
-                print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) + ' Loss: ' + str(model.loss.item()))
+                print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) + ' Loss: ' + str(model.local_loss_value.item()))
 
         print('Save Model ...')
-        model.save_networks(epoch)
-        model.save_networks('latest')
+        torch.save(model.state_dict(), os.path.join(save_path, 'model_' + str(epoch) + '.pth'))
         test1(model, args, save_path, epoch)
+    
     print('Finished Training')
 
 if __name__ == '__main__':
@@ -172,7 +188,14 @@ if __name__ == '__main__':
     np.random.seed(2022)
     args = parse_args()
     mini_batch = args.batch_size
-    save_path = getSavePath(args)
-    model = Model(args, device=device, mode = 'local').to(device)
 
-    train(model, args)
+    save_path = getSavePath(args)
+    lr = args.lr
+
+    model = Model(args, device=device).to(device)
+    if args.test:
+        model.load_state_dict(torch.load(os.path.join(save_path, 'model_0.pth')))
+        test1(model, args, save_path, epoch=0)
+    else:
+        # model.load_state_dict(torch.load(os.path.join(save_path, 'model_4.pth')))
+        train(model, lr, args, save_path)
