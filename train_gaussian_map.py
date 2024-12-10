@@ -28,7 +28,7 @@ def parse_args():
     parser.add_argument('--shift_range_lon', type=float, default=20., help='meters')
     parser.add_argument('--predict_height', type=int, default=1., help='whether to predict height')
     parser.add_argument('--feature_forward_project', type=int, default=0, help='test with trained model')
-    parser.add_argument('--test', type=int, default=0, help='test with trained model')
+    parser.add_argument('--test', type=int, default=1, help='test with trained model')
     parser.add_argument('--root', type=str, default='/data/dataset/KITTI/', help='test with trained model')
     return parser.parse_args()
 
@@ -289,8 +289,8 @@ if __name__ == '__main__':
 
     model = Model(args, device=device, method='up').to(device)
     if args.test:
-        model.load_state_dict(torch.load(os.path.join(save_path, 'model_0.pth')))
-        test1(model, args, save_path, epoch=0)
+        model.load_state_dict(torch.load(os.path.join(save_path, 'model_5.pth')))
+        test2(model, args, save_path, epoch=0)
     else:
-        # model.load_state_dict(torch.load(os.path.join(save_path, 'model_4.pth')))
+        model.load_state_dict(torch.load(os.path.join(save_path, 'model_5.pth')))
         train(model, lr, args, save_path)

@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-root_dir = '/home/wangqw/video_dataset/KITTI' # '../../data/Kitti' # '../Data' #'..\\Data' #
+root_dir = '/data/dataset/KITTI' # '../../data/Kitti' # '../Data' #'..\\Data' #
 
 test_csv_file_name = 'test.csv'
 ignore_csv_file_name = 'ignore.csv'
@@ -478,3 +478,37 @@ def load_test1_data(batch_size, root, shift_range_lat=20, shift_range_lon=20, ro
     test1_loader = DataLoader(test1_set, batch_size=batch_size, shuffle=False, pin_memory=True,
                             num_workers=num_thread_workers, drop_last=False)
     return test1_loader
+
+def load_test2_data(batch_size, shift_range_lat=20, shift_range_lon=20, rotation_range=10):
+    SatMap_process_sidelength = data_utils.get_process_satmap_sidelength()
+
+    satmap_transform = transforms.Compose([
+        transforms.Resize(size=[SatMap_process_sidelength, SatMap_process_sidelength]),
+        transforms.ToTensor(),
+    ])
+
+    Grd_h = GrdImg_H
+    Grd_w = GrdImg_W
+
+    grdimage_transform = transforms.Compose([
+        transforms.Resize(size=[Grd_h, Grd_w]),
+        transforms.ToTensor(),
+    ])
+
+    forward_image_transform = transforms.Compose([
+        transforms.Resize(size=[SatMap_process_sidelength, SatMap_process_sidelength]),
+        transforms.ToTensor(),
+    ])
+    # # Plz keep the following two lines!!! These are for fair test comparison.
+    # np.random.seed(2022)
+    # torch.manual_seed(2022)
+
+    test2_set = SatGrdDatasetTest(root=root_dir, file=test2_file,
+                              transform=(satmap_transform, grdimage_transform, forward_image_transform),
+                              shift_range_lat=shift_range_lat,
+                              shift_range_lon=shift_range_lon,
+                              rotation_range=rotation_range)
+
+    test2_loader = DataLoader(test2_set, batch_size=batch_size, shuffle=False, pin_memory=True,
+                              num_workers=num_thread_workers, drop_last=False)
+    return test2_loader
