@@ -30,7 +30,7 @@ from gaussian.decoder import GrdDecoder
 from gaussian.local_loss import LocalLoss
 import data_utils
 from VGG import VGGUnet, L2_norm, Encoder, Decoder
-
+from models.gaussian_feature_extractor import GSDownSample, GSUpSample
 
 to_pil_image = transforms.ToPILImage()
 # original_raw_Lpips_step = 50000
@@ -59,7 +59,7 @@ def get_integer(f: Fraction) -> int:
     return f.numerator
 
 class Model(nn.Module):
-    def __init__(self, args, device):  # device='cuda:0',
+    def __init__(self, args, device, method='down'):  # device='cuda:0',
         super(Model, self).__init__()
         self.device = device
         self.args = args
@@ -68,7 +68,7 @@ class Model(nn.Module):
         self.global_step = 0
         self.n_feature_channels = 8
         self.variational = "gaussians"
-
+        self.method = method
         self.supersampling_factor = 8
         self.level = args.level
 
@@ -81,9 +81,13 @@ class Model(nn.Module):
         self.grd_decoder = GrdDecoder()
         # self.sat_encoder = AutoencoderKL()
         self.sat_encoder = VGGUnet(self.level)
-        self.grd_encoder = VGGUnet(self.level)
+        if method == "down":
+            self.grd_encoder = GSDownSample(self.level)
+        else:
+            self.grd_encoder = GSUpSample()
+        # self.grd_encoder = FeatureExtractor()
         self.discriminator = DiscriminatorPatchGan()
-
+        self.autoencoder = AutoencoderKL()
         self.lpips = LPIPS(net="vgg")
         self.local_loss = LocalLoss(args.shift_range_lat, args.shift_range_lon, args.rotation_range)
         convert_to_buffer(self.lpips, persistent=False)
@@ -120,26 +124,32 @@ class Model(nn.Module):
             far,
             (128, 512),
             return_colors=True,
-            return_features=self.global_step >= L1_step,
+            return_features=False,
         )
         return decoder_out
 
-    def sat_prjection(self):
+    def sat_prjection(self, mode="down"):
         color, latent = render_projections(self.gaussians.sample(), (512,512), extra_label='prob')
         sat_img = color
 
         projection_img = to_pil_image(sat_img[0].clip(min=0, max=1))
-        projection_img.save(f"sat_projecton.png")
-        return sat_img
+        projection_img.save(f"sat_proj_{mode}.png")
+        if mode == 'down':
+            return latent
+        else:
+            z = self.rescale(latent, Fraction(1, self.supersampling_factor))
+            feat = self.autoencoder.feature_extractor(z)
+            return feat
 
     def forward(self, sat_map, grd_img_left, project_map, grd_depth, left_camera_k, gt_shift_u=None, gt_shift_v=None, gt_heading=None, mode='local'):
         # train the grd generator
         decoder_grd = self.grd_projection(grd_img_left, grd_depth, left_camera_k)
         test_img = to_pil_image(decoder_grd.color[0].clip(min=0, max=1))
-        test_img.save('probabilistic_test.png')
+        test_img.save(f'prob_test_{self.method}.png')
 
-        grd_map = self.sat_prjection()
+        grd_map = self.sat_prjection(self.method)
         grd_feat_list, grd_conf_list = self.grd_encoder(grd_map)
+
         grd_feat = grd_feat_list[-1]
         sat_feat_list, sat_conf_list = self.sat_encoder(sat_map)
         sat_feat = sat_feat_list[-1]
@@ -147,25 +157,17 @@ class Model(nn.Module):
             local_loss = self.local_loss(grd_feat, sat_feat, gt_shift_u, gt_shift_v, gt_heading, mode=mode)
             depth_l1_loss = F.l1_loss(decoder_grd.depth.unsqueeze(-1), self.grd_depth, reduction='mean')
             rgb_mse_loss = F.mse_loss(decoder_grd.color, self.grd_img_left, reduction='mean')
-            total_loss = rgb_mse_loss * 20 + depth_l1_loss + local_loss * 10
+            if self.global_step >= raw_Lpips_step:
+                lpips_loss = self.lpips.forward(decoder_grd.color, self.grd_img_left, normalize=True).mean()
+            else:
+                lpips_loss = torch.tensor(0, dtype=torch.float32, device=decoder_grd.color.device)
+
+            total_loss = rgb_mse_loss * 20 + depth_l1_loss + local_loss * 20 + lpips_loss
             self.local_loss_value = local_loss
             return total_loss
         elif mode == 'test':
             pred_u1, pred_v1 = self.local_loss(grd_feat, sat_feat, gt_shift_u, gt_shift_v, gt_heading, mode=mode)
             return pred_u1, pred_v1
-    
-    def __patch_instance_norm_state_dict(self, state_dict, module, keys, i=0):
-        key = keys[i]
-        if i + 1 == len(keys):  # at the end, pointing to a parameter/buffer
-            if module.__class__.__name__.startswith('InstanceNorm') and \
-                    (key == 'running_mean' or key == 'running_var'):
-                if getattr(module, key) is None:
-                    state_dict.pop('.'.join(keys))
-            if module.__class__.__name__.startswith('InstanceNorm') and \
-                    (key == 'num_batches_tracked'):
-                state_dict.pop('.'.join(keys))
-        else:
-            self.__patch_instance_norm_state_dict(state_dict, getattr(module, key), keys, i + 1)
 
     def rescale(
         self,
@@ -187,16 +189,3 @@ class Model(nn.Module):
             if net is not None:
                 for param in net.parameters():
                     param.requires_grad = requires_grad
-    
-    def get_adaptive_weight(
-        self,
-        nll_loss: Float[Tensor, ""], 
-        g_loss: Float[Tensor, ""], 
-        last_layer_weights: Tensor
-    ):
-        nll_grads = torch.autograd.grad(nll_loss, last_layer_weights, retain_graph=True)[0]
-        g_grads = torch.autograd.grad(g_loss, last_layer_weights, retain_graph=True)[0]
-
-        weight = torch.linalg.norm(nll_grads) / (torch.linalg.norm(g_grads) + 1e-4)
-        weight = torch.clamp(weight, 0.0, 1.0).detach()
-        return weight

@@ -115,3 +115,16 @@ longitudinal within 1 meters (init, pred): 4.770739464617016 53.16724092234296
 longitudinal within 3 meters (init, pred): 15.663927908825867 80.5989928438908
 longitudinal within 5 meters (init, pred): 25.39093559501723 84.78664192949907
 ====================================
+====================================
+       EPOCH: 9
+distance within 1 meters (pred, init): 49.1121123774185 0.1590246488205672
+distance within 3 meters (pred, init): 80.70500927643785 1.7757752451630002
+distance within 5 meters (pred, init): 85.3167240922343 5.486350384309568
+------------------------
+lateral      within 1 meters (init, pred): 4.8767558971640605 94.99072356215214
+lateral      within 3 meters (init, pred): 15.08083752981712 99.12536443148689
+lateral      within 5 meters (init, pred): 25.2054068380599 99.62894248608535
+longitudinal within 1 meters (init, pred): 4.770739464617016 51.683010866684334
+longitudinal within 3 meters (init, pred): 15.663927908825867 81.02305857407899
+longitudinal within 5 meters (init, pred): 25.39093559501723 85.39623641664458
+====================================

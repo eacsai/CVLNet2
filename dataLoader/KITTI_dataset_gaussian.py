@@ -14,14 +14,14 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-root_dir = '/home/wangqw/video_dataset/KITTI' # '../../data/Kitti' # '../Data' #'..\\Data' #
+root_dir = '/data/dataset/KITTI' # '../../data/Kitti' # '../Data' #'..\\Data' #
 
 test_csv_file_name = 'test.csv'
 ignore_csv_file_name = 'ignore.csv'
 satmap_dir = 'satmap'
 grdimage_dir = 'depth_data'
 left_color_camera_dir = 'image_02/data'  # 'image_02\\data' #
-lett_no_sky_dir = 'image_02/grd_no_sky'  # 'image_02\\grd_no_sky' #
+left_no_sky_dir = 'image_02/grd_no_sky'  # 'image_02\\grd_no_sky' #
 left_forward_grd_dir = 'image_02/grd_forward_map_v2'  # 'image_02\\data' #
 left_height_grd_dir = 'image_02/grd_height'  # 'image_02\\data' #
 sat_height_dir = 'image_02/sat_height'  # 'image_02\\data' #
@@ -144,7 +144,7 @@ class SatGrdDataset(Dataset):
             heading = torch.from_numpy(np.asarray(heading))
 
             # data imformation
-            left_img_name = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, lett_no_sky_dir,
+            left_img_name = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_no_sky_dir,
                                             image_no.lower())
             left_forward_img = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_forward_grd_dir,
                                             image_no.lower())
@@ -330,7 +330,7 @@ class SatGrdDatasetTest(Dataset):
             heading = torch.from_numpy(np.asarray(heading))
 
             # load data
-            left_img_name = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_color_camera_dir,
+            left_img_name = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_no_sky_dir,
                                 image_no.lower())
             left_forward_img = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_forward_grd_dir,
                                             image_no.lower())
@@ -479,3 +479,37 @@ def load_test1_data(batch_size, root, shift_range_lat=20, shift_range_lon=20, ro
     test1_loader = DataLoader(test1_set, batch_size=batch_size, shuffle=False, pin_memory=True,
                             num_workers=num_thread_workers, drop_last=False)
     return test1_loader
+
+def load_test2_data(batch_size, shift_range_lat=20, shift_range_lon=20, rotation_range=10):
+    SatMap_process_sidelength = data_utils.get_process_satmap_sidelength()
+
+    satmap_transform = transforms.Compose([
+        transforms.Resize(size=[SatMap_process_sidelength, SatMap_process_sidelength]),
+        transforms.ToTensor(),
+    ])
+
+    Grd_h = GrdImg_H
+    Grd_w = GrdImg_W
+
+    grdimage_transform = transforms.Compose([
+        transforms.Resize(size=[Grd_h, Grd_w]),
+        transforms.ToTensor(),
+    ])
+
+    forward_image_transform = transforms.Compose([
+        transforms.Resize(size=[SatMap_process_sidelength, SatMap_process_sidelength]),
+        transforms.ToTensor(),
+    ])
+    # # Plz keep the following two lines!!! These are for fair test comparison.
+    # np.random.seed(2022)
+    # torch.manual_seed(2022)
+
+    test2_set = SatGrdDatasetTest(root=root_dir, file=test2_file,
+                              transform=(satmap_transform, grdimage_transform, forward_image_transform),
+                              shift_range_lat=shift_range_lat,
+                              shift_range_lon=shift_range_lon,
+                              rotation_range=rotation_range)
+
+    test2_loader = DataLoader(test2_set, batch_size=batch_size, shuffle=False, pin_memory=True,
+                              num_workers=num_thread_workers, drop_last=False)
+    return test2_loader

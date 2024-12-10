@@ -106,6 +106,16 @@ class AutoencoderKL(Autoencoder[AutoencoderKLCfg]):
             logvar=latent_dist.logvar.reshape(*batch_dims, *latent_dist.logvar.shape[1:]),
         )
     
+    def feature_extractor(self, z: torch.Tensor):
+        decoder = self.model.decoder
+        z = decoder.conv_in(z)
+
+        upscale_dtype = next(iter(decoder.up_blocks.parameters())).dtype
+        # middle
+        z = decoder.mid_block(z)
+        z = z.to(upscale_dtype)
+        return z
+    
     def _decoder_foward(
         self,
         z: torch.Tensor,

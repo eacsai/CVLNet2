@@ -12,7 +12,7 @@ import scipy.io as scio
 import torch.nn as nn
 from itertools import chain
 
-from dataLoader.KITTI_dataset_gaussian import load_train_data, load_test1_data
+from dataLoader.KITTI_dataset_gaussian import load_train_data, load_test1_data, load_test2_data
 from kitti_image_model_plan2_gaussian import Model
 
 def parse_args():
@@ -134,6 +134,99 @@ def test1(model, args, save_path, epoch):
     f.close()
 
     model.train()
+    return
+
+
+def test2(net_test, args, save_path, epoch):
+    ### net evaluation state
+    net_test.eval()
+
+    dataloader = load_test2_data(mini_batch, args.shift_range_lat, args.shift_range_lon, args.rotation_range)
+    pred_lons = []
+    pred_lats = []
+    gt_lons = []
+    gt_lats = []
+
+    with torch.no_grad():
+        for i, data in enumerate(dataloader, 0):
+            sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_height, project_map, sat_height, grd_depth = [item.to(device) for item in data[:-1]]
+            pred_u, pred_v = model(sat_map, grd_left_imgs, project_map, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='test')
+
+            pred_lons.append(pred_u.data.cpu().numpy())
+            pred_lats.append(pred_v.data.cpu().numpy())
+            gt_lons.append(gt_shift_u[:, 0].data.cpu().numpy() * args.shift_range_lon)
+            gt_lats.append(gt_shift_v[:, 0].data.cpu().numpy() * args.shift_range_lat)
+
+            if i % 20 == 0:
+                print(i)
+
+    pred_lons = np.concatenate(pred_lons, axis=0)
+    pred_lats = np.concatenate(pred_lats, axis=0)
+    gt_lons = np.concatenate(gt_lons, axis=0)
+    gt_lats = np.concatenate(gt_lats, axis=0)
+
+    scio.savemat(os.path.join(save_path, 'test2_result.mat'), {'gt_lons': gt_lons, 'gt_lats': gt_lats,
+                                                         'pred_lats': pred_lats, 'pred_lons': pred_lons})
+
+    distance = np.sqrt((pred_lons - gt_lons) ** 2 + (pred_lats - gt_lats) ** 2)  # [N]
+
+    init_dis = np.sqrt(gt_lats ** 2 + gt_lons ** 2)
+    diff_lats = np.abs(pred_lats - gt_lats)
+    diff_lons = np.abs(pred_lons - gt_lons)
+
+    metrics = [1, 3, 5]
+
+    f = open(os.path.join(save_path, 'test_results.txt'), 'a')
+    f.write('====================================\n')
+    f.write('       EPOCH: ' + str(epoch) + '\n')
+    print('====================================')
+    print('       EPOCH: ' + str(epoch))
+    print('Test2 results:')
+    
+    print('Distance average: (init, pred)', np.mean(init_dis), np.mean(distance))
+    print('Distance median: (init, pred)', np.median(init_dis), np.median(distance))
+
+    print('Lateral average: (init, pred)', np.mean(np.abs(gt_lats)), np.mean(diff_lats))
+    print('Lateral median: (init, pred)', np.median(np.abs(gt_lats)), np.median(diff_lats))
+
+    print('Longitudinal average: (init, pred)', np.mean(np.abs(gt_lons)), np.mean(diff_lons))
+    print('Longitudinal median: (init, pred)', np.median(np.abs(gt_lons)), np.median(diff_lons))
+
+    for idx in range(len(metrics)):
+        pred = np.sum(distance < metrics[idx]) / distance.shape[0] * 100
+        init = np.sum(init_dis < metrics[idx]) / init_dis.shape[0] * 100
+
+        line = 'distance within ' + str(metrics[idx]) + ' meters (pred, init): ' + str(pred) + ' ' + str(init)
+        print(line)
+        f.write(line + '\n')
+
+    print('-------------------------')
+    f.write('------------------------\n')
+
+    diff_lats = np.abs(pred_lats - gt_lats)
+    diff_lons = np.abs(pred_lons - gt_lons)
+    for idx in range(len(metrics)):
+        pred = np.sum(diff_lats < metrics[idx]) / diff_lats.shape[0] * 100
+        init = np.sum(np.abs(gt_lats) < metrics[idx]) / gt_lats.shape[0] * 100
+
+        line = 'lateral      within ' + str(metrics[idx]) + ' meters (init, pred): ' + str(init) + ' ' + str(pred)
+        print(line)
+        f.write(line + '\n')
+
+    for idx in range(len(metrics)):
+        pred = np.sum(diff_lons < metrics[idx]) / diff_lons.shape[0] * 100
+        init = np.sum(np.abs(gt_lons) < metrics[idx]) / gt_lons.shape[0] * 100
+
+        line = 'longitudinal within ' + str(metrics[idx]) + ' meters (init, pred): ' + str(init) + ' ' + str(pred)
+        print(line)
+        f.write(line + '\n')
+
+    print('====================================')
+    f.write('====================================\n')
+    f.close()
+
+    net_test.train()
+
     return
 
 def train(model, args):
