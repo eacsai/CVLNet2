@@ -10,7 +10,7 @@ from einops import rearrange, repeat
 
 from .diagonal_gaussian_distribution import DiagonalGaussianDistribution
 from .encoder import Gaussians
-from gaussian.latent_splat import render_cuda, RenderOutput
+from gaussian.latent_splat_feat import render_cuda, RenderOutput
 
 DepthRenderingMode = Literal[
     "depth",
@@ -50,8 +50,8 @@ class GrdDecoder(nn.Module):
         b, _, _ = extrinsics.shape
         color_sh = gaussians.color_harmonics \
             if return_colors and gaussians.color_harmonics is not None else None
-        feature_sh = gaussians.feature_harmonics \
-            if return_features and gaussians.feature_harmonics is not None else None
+        feature = gaussians.feature \
+            if return_features and gaussians.feature is not None else None
         rendered: RenderOutput = render_cuda(
             extrinsics,
             intrinsics,
@@ -63,7 +63,7 @@ class GrdDecoder(nn.Module):
             gaussians.covariances,
             gaussians.opacities,
             color_sh,
-            feature_sh
+            feature
         )
         out = self.render_to_decoder_output(rendered, b)
         return out

@@ -20,14 +20,14 @@ from lpips import LPIPS
 
 from ply_export import export_ply
 from gaussian.build_gaussians import *
-from vis_gaussian import render_projections
+from vis_gaussian_feat import render_projections
 from loss.lpips import convert_to_buffer
 from gaussian.diagonal_gaussian_distribution import DiagonalGaussianDistribution
 from gaussian.autoencoder_kl import AutoencoderKL
 from gaussian.pix2pix import DiscriminatorPatchGan
-from gaussian.encoder import GaussianEncoder, VariationalGaussians
-from gaussian.decoder import GrdDecoder
-from gaussian.local_loss import MutilLocalLoss
+from gaussian.encoder_feat import GaussianEncoder, Gaussians
+from gaussian.decoder_feat import GrdDecoder
+from gaussian.local_loss import LocalLoss
 import data_utils
 from VGG import VGGUnet, L2_norm, Encoder, Decoder
 from models.gaussian_feature_extractor import GSDownSample, GSUpSample
@@ -78,21 +78,21 @@ class Model(nn.Module):
             self.meters_per_pixel.append(meter_per_pixel * (2 ** (3 - level)))
             
         self.gaussian_encoder = GaussianEncoder()
+        self.feat_cnn = nn.Sequential(
+            nn.Conv2d(4, 64, kernel_size=3, padding=1, bias=False),
+        )
         self.grd_decoder = GrdDecoder()
         # self.sat_encoder = AutoencoderKL()
         self.sat_encoder = VGGUnet(self.level)
-        if method == "down":
-            self.grd_encoder = GSDownSample(self.level)
-        else:
-            self.grd_encoder = GSUpSample()
+        self.grd_encoder = VGGUnet(self.level)
         # self.grd_encoder = FeatureExtractor()
         self.discriminator = DiscriminatorPatchGan()
         self.autoencoder = AutoencoderKL()
         self.lpips = LPIPS(net="vgg")
-        self.local_loss = MutilLocalLoss(args.shift_range_lat, args.shift_range_lon, args.rotation_range)
+        self.local_loss = LocalLoss(args.shift_range_lat, args.shift_range_lon, args.rotation_range)
         convert_to_buffer(self.lpips, persistent=False)
 
-    def grd_projection(self, grd_img_left, grd_depth, left_camera_k, deterministic=False) -> DecoderOutput:
+    def grd_gaussian_render(self, grd_img_left, grd_depth, left_camera_k, deterministic=False) -> DecoderOutput:
         # initial
         self.camera_k = left_camera_k.clone()
         self.camera_k[:, :1, :] = self.camera_k[:, :1, :] / grd_depth.shape[2]  # original size input into feature get network/ output of feature get network
@@ -106,7 +106,7 @@ class Model(nn.Module):
         near = torch.ones(B).to(grd_img_left.device) * 0.5
         far = torch.ones(B).to(grd_img_left.device) * 160
         # Encode the context images.
-        self.gaussians: VariationalGaussians = self.gaussian_encoder(
+        self.gaussians: Gaussians = self.gaussian_encoder(
             self.grd_img_left, 
             self.camera_k, 
             self.extrinsics, 
@@ -116,43 +116,43 @@ class Model(nn.Module):
             deterministic,
             self.variational in ("gaussians", "none"),
         )
+        # grd_out
         decoder_out: DecoderOutput = self.grd_decoder.forward(
-            self.gaussians.sample() if self.variational in ("gaussians", "none") else gaussians.flatten(),     # Sample from variational Gaussians
+            self.gaussians,     # Sample from variational Gaussians
             self.extrinsics,
             self.camera_k,
             near,
             far,
             (128, 512),
             return_colors=True,
-            return_features=False,
+            return_features=True,
         )
         return decoder_out
 
-    def sat_prjection(self, mode="down"):
-        color, latent = render_projections(self.gaussians.sample(), (512,512), extra_label='prob')
-        sat_img = color
+    def sat_prjection(self):
+        color, latent = render_projections(self.gaussians, (512,512), extra_label='prob')
+        feature = self.feat_cnn(latent)
+        return feature, color
 
-        # projection_img = to_pil_image(sat_img[0].clip(min=0, max=1))
-        # projection_img.save(f"sat_{mode}.png")
-        if mode == 'down':
-            return latent
-        else:
-            z = self.rescale(latent, Fraction(1, self.supersampling_factor))
-            feat = self.autoencoder.feature_extractor(z)
-            return feat
-
-    def forward(self, sat_map, grd_img_left, project_map, grd_depth, left_camera_k, gt_shift_u=None, gt_shift_v=None, gt_heading=None, mode='local'):
+    def forward(self, sat_map, grd_img_left, project_map, grd_depth, left_camera_k, gt_shift_u=None, gt_shift_v=None, gt_heading=None, mode='train', method='color'):
         # train the grd generator
-        decoder_grd = self.grd_projection(grd_img_left, grd_depth, left_camera_k)
+        decoder_grd = self.grd_gaussian_render(grd_img_left, grd_depth, left_camera_k)
+        # refine_grd = self.grd_projection()
         test_img = to_pil_image(decoder_grd.color[0].clip(min=0, max=1))
-    
-        test_img.save(f'prob_{self.method}.png')
+        
+        test_img.save(f'prob_test_{method}.png')
 
-        grd_map = self.sat_prjection(self.method)
-        grd_feat_list, grd_conf_list = self.grd_encoder(grd_map)
+        grd_gs_feat, grd_map = self.sat_prjection()
+        if method == 'feat':
+            grd_feat = grd_gs_feat
+        elif method == 'color':
+            grd_feat_list, grd_conf_list = self.grd_encoder(grd_map)
+            grd_feat = grd_feat_list[-1]
+        
         sat_feat_list, sat_conf_list = self.sat_encoder(sat_map)
+        sat_feat = sat_feat_list[-1]
         if mode == 'train':
-            local_loss = self.local_loss(grd_feat_list, sat_feat_list, gt_shift_u, gt_shift_v, gt_heading, mode=mode)
+            local_loss = self.local_loss(grd_feat, sat_feat, gt_shift_u, gt_shift_v, gt_heading, mode=mode)
             depth_l1_loss = F.l1_loss(decoder_grd.depth.unsqueeze(-1), self.grd_depth, reduction='mean')
             rgb_mse_loss = F.mse_loss(decoder_grd.color, self.grd_img_left, reduction='mean')
             if self.global_step >= raw_Lpips_step:
@@ -164,7 +164,7 @@ class Model(nn.Module):
             self.local_loss_value = local_loss
             return total_loss
         elif mode == 'test':
-            pred_u1, pred_v1 = self.local_loss(grd_feat_list, sat_feat_list, gt_shift_u, gt_shift_v, gt_heading, mode=mode)
+            pred_u1, pred_v1 = self.local_loss(grd_feat, sat_feat, gt_shift_u, gt_shift_v, gt_heading, mode=mode)
             return pred_u1, pred_v1
 
     def rescale(

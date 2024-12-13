@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from math import isqrt
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple, Union
 
 import torch
 from diff_gaussian_rasterization import (
@@ -68,8 +68,8 @@ def get_projection_matrix(
 
 @dataclass
 class RenderOutput:
-    color: Float[Tensor, "batch 3 height width"] | None
-    feature: Float[Tensor, "batch channels height width"] | None
+    color: Float[Tensor, "batch 3 height width"]
+    feature: Float[Tensor, "batch channels height width"]
     mask: Float[Tensor, "batch height width"]
     depth: Float[Tensor, "batch height width"]
 
@@ -83,8 +83,8 @@ def render_cuda(
     gaussian_means: Float[Tensor, "batch gaussian 3"],
     gaussian_covariances: Float[Tensor, "batch gaussian 3 3"],
     gaussian_opacities: Float[Tensor, "batch gaussian"],
-    gaussian_color_sh_coefficients: Float[Tensor, "batch gaussian 3 d_color_sh"] | None = None,
-    gaussian_feature_sh_coefficients: Float[Tensor, "batch gaussian channels d_feature_sh"] | None = None,
+    gaussian_color_sh_coefficients: Union[Tensor, None] = None,
+    gaussian_feature_sh_coefficients: Union[Tensor, None] = None,
     scale_invariant: bool = True,
     use_sh: bool = True
 ) -> RenderOutput:
@@ -198,11 +198,11 @@ def render_cuda_orthographic(
     gaussian_means: Float[Tensor, "batch gaussian 3"],
     gaussian_covariances: Float[Tensor, "batch gaussian 3 3"],
     gaussian_opacities: Float[Tensor, "batch gaussian"],
-    gaussian_color_sh_coefficients: Float[Tensor, "batch gaussian 3 d_sh"] | None = None,
-    gaussian_feature_sh_coefficients: Float[Tensor, "batch gaussian channels d_sh"] | None = None,
+    gaussian_color_sh_coefficients: Union[Float[Tensor, "batch gaussian 3 d_sh"], None] = None,
+    gaussian_feature_sh_coefficients: Union[Float[Tensor, "batch gaussian channels d_sh"], None] = None,
     fov_degrees: float = 0.1,
     use_sh: bool = True,
-    dump: dict | None = None,
+    dump: Union[dict, None] = None,
 ) -> Tuple[
         Optional[Float[Tensor, "batch channels height width"]],
         Optional[Float[Tensor, "batch channels height width"]]

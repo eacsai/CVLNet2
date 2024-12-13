@@ -12,7 +12,7 @@ from backbone.backbone_dino import BackboneDino
 from depth_predictor.depth_predictor_monocular import DepthPredictorMonocular
 from gaussian.diagonal_gaussian_distribution import DiagonalGaussianDistribution
 from gaussian.build_gaussians import sample_image_grid
-from gaussian.gaussian_adapter import GaussianAdapter
+from gaussian.gaussian_adapter_feat import GaussianAdapter
 
 @dataclass
 class Gaussians:
@@ -20,7 +20,7 @@ class Gaussians:
     covariances: Float[Tensor, "batch gaussian dim dim"]
     opacities: Float[Tensor, "batch gaussian"]
     color_harmonics: Float[Tensor, "batch gaussian 3 color_d_sh"]
-    feature_harmonics: Float[Tensor, "batch gaussian 4 feature_d_sh"]
+    feature: Float[Tensor, "batch gaussian dim"]
 
 @dataclass
 class VariationalGaussians(Gaussians):
@@ -56,7 +56,7 @@ class GaussianEncoder(nn.Module):
             nn.ReLU(),
             nn.Linear(
                 128,
-                156,
+                88,
             ),
         )
         # High resolution skip only required in case of now downscaling
@@ -146,14 +146,14 @@ class GaussianEncoder(nn.Module):
         # )
 
         gaussian_features = rearrange(
-            gaussians.feature_harmonics,
-            "b r spp c d_f_sh -> b (r spp) c d_f_sh",
+            gaussians.feature,
+            "b r spp c -> b (r spp) c",
         )
-        gaussian_features = DiagonalGaussianDistribution(
-            **{"params" if variational else "mean": gaussian_features},
-            dim=-2
-        )
-        return VariationalGaussians(
+        # gaussian_features = DiagonalGaussianDistribution(
+        #     **{"params" if variational else "mean": gaussian_features},
+        #     dim=-2
+        # )
+        return Gaussians(
             rearrange(
                 gaussians.means,
                 "b r spp xyz -> b (r spp) xyz",
@@ -170,7 +170,10 @@ class GaussianEncoder(nn.Module):
                 gaussians.color_harmonics,
                 "b r spp c d_c_sh -> b (r spp) c d_c_sh",
             ),
-            gaussian_features,
+            rearrange(
+                gaussians.feature,
+                "b r spp c -> b (r spp) c",
+            ),
         )
 
     @property

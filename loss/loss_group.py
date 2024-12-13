@@ -16,7 +16,7 @@ RecursiveStringDict = Dict[str, Union[Any, 'RecursiveStringDict']]
 
 def flatten_nested_string_dict(
     rsd: RecursiveStringDict, 
-    prefix: str | None = None
+    prefix: Union[str, None] = None
 ) -> Dict[str, Any]:
     res = {}
     for key, value in rsd.items():
@@ -32,7 +32,7 @@ class LossGroup(nn.Module):
         self,
         name: str,
         nll_losses: list[Union[Loss, 'LossGroup']] = [],
-        generator_loss: LossGenerator | None = None,
+        generator_loss: Union[LossGenerator, None] = None,
         discriminator_loss: LossDiscriminator | None = None
     ) -> None:
         super().__init__()
@@ -70,7 +70,7 @@ class LossGroup(nn.Module):
         prediction,
         gt,
         global_step: int = 0,
-        last_layer_weights: Tensor | None = None
+        last_layer_weights: Union[Tensor, None] = None
     ) -> Tuple[
         Float[Tensor, ""] | int,
         Dict[str, LossValue]

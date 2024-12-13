@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Union
 
 from .backbone import Backbone
 from .backbone_dino import BackboneDino, BackboneDinoCfg
@@ -9,7 +9,7 @@ BACKBONES: dict[str, Backbone[Any]] = {
     "dino": BackboneDino,
 }
 
-BackboneCfg = BackboneResnetCfg | BackboneDinoCfg
+BackboneCfg = Union[BackboneResnetCfg, BackboneDinoCfg]
 
 
 def get_backbone(cfg: BackboneCfg, d_in: int) -> Backbone[Any]:

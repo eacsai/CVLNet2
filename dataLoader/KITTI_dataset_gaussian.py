@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-root_dir = '/data/dataset/KITTI' # '../../data/Kitti' # '../Data' #'..\\Data' #
+root_dir = '/home/wangqw/video_dataset/KITTI' # '../../data/Kitti' # '../Data' #'..\\Data' #
 
 test_csv_file_name = 'test.csv'
 ignore_csv_file_name = 'ignore.csv'

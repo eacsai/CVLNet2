@@ -1,7 +1,7 @@
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 import torch
 import numpy as np
@@ -13,15 +13,15 @@ import torch.nn as nn
 from itertools import chain
 
 from dataLoader.KITTI_dataset_gaussian import load_train_data, load_test1_data, load_test2_data
-from kitti_image_model_plan2_gaussian import Model
+from kitti_image_gaussian_refine_rgb import Model
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', type=str, default='gaussian_map_stage1')
+    parser.add_argument('--name', type=str, default='gaussian_map_stage1_refine_rgb')
     parser.add_argument('--epochs', type=int, default=100) 
-    parser.add_argument('--batch_size', type=int, default=6)
+    parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--warm_up_steps', type=float, default=10000)    
+    parser.add_argument('--warm_up_steps', type=float, default=1000)    
     parser.add_argument('--level', type=int, default=3, help='2, 3, 4, -1, -2, -3, -4')
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
     parser.add_argument('--shift_range_lat', type=float, default=20., help='meters')
@@ -234,13 +234,13 @@ def test2(net_test, args, save_path, epoch):
 def train(model, args, mode):
     for epoch in range(args.epochs):
         
-        train_loader = load_train_data(mini_batch, root=args.root, shift_range_lat=args.shift_range_lat, shift_range_lon=args.shift_range_lon, rotation_range=args.rotation_range)
+        train_loader = load_train_data(mini_batch, root=args.root)
         print('batch_size:', mini_batch, '\n num of batches:', len(train_loader))
 
         for Loop, Data in enumerate(train_loader, 0):
             sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_height, project_map, sat_height, grd_depth = [item.to(device) for item in Data[:-1]]
 
-            model(sat_map, grd_left_imgs, project_map, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode=mode)
+            model(sat_map, grd_left_imgs, project_map, grd_depth, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, mode='train')
             # 打印每个参数的梯度
             # for name, param in model.named_parameters():
             #     if param.grad is not None:
@@ -254,11 +254,9 @@ def train(model, args, mode):
 
         print('Save Model ...')
         torch.save(model.state_dict(), os.path.join(save_path, 'model_' + str(epoch) + '.pth'))
-        # model.save_networks(epoch)
-        # model.save_networks('latest')
-        # if mode != 'gaussian':
-        #     test1(model, args, save_path, epoch)
-        #     test2(model, args, save_path, epoch)
+
+        test1(model, args, save_path, epoch)
+        test2(model, args, save_path, epoch)
     print('Finished Training')
 
 if __name__ == '__main__':
@@ -272,6 +270,6 @@ if __name__ == '__main__':
     mini_batch = args.batch_size
     save_path = getSavePath(args)
     mode = 'local'
-    model = Model(args, device=device, mode=mode).to(device)
-    model.load_state_dict(torch.load(os.path.join(save_path, 'model_1.pth')))
+    model = Model(args, device=device).to(device)
+    model.load_state_dict(torch.load(os.path.join(save_path, 'model_init.pth')))
     train(model, args, mode)

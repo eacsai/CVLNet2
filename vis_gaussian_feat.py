@@ -11,7 +11,7 @@ import numpy as np
 from torchvision import transforms
 from gaussian.decoder import DecoderOutput
 from gaussian.diagonal_gaussian_distribution import DiagonalGaussianDistribution
-from gaussian.latent_splat import render_cuda_orthographic, RenderOutput
+from gaussian.latent_splat_feat import render_cuda_orthographic, RenderOutput
 # from gaussian.nopo_cuda_splatting import render_cuda_orthographic
 to_pil_image = transforms.ToPILImage()
 
@@ -35,7 +35,7 @@ class Gaussians:
     covariances: Float[Tensor, "batch gaussian dim dim"]
     opacities: Float[Tensor, "batch gaussian"]
     color_harmonics: Float[Tensor, "batch gaussian 3 d_sh"]
-    feature_harmonics: Union[Tensor, None] = None 
+    feature: Union[Tensor, None] = None 
 
 def _sanitize_color(color: Color) -> Float[Tensor, "#channel"]:
     # Convert tensor to list (or individual item).
@@ -298,7 +298,7 @@ def render_projections(
             gaussians.covariances[b:b+1],
             gaussians.opacities[b:b+1],
             gaussians.color_harmonics[b:b+1],
-            gaussians.feature_harmonics[b:b+1],
+            gaussians.feature[b:b+1],
             fov_degrees=1.0,
         )
 

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Generic, Optional, TypeVar
 
-from jaxtyping import Float
+from jaxtyping import Float, Union
 from torch import Tensor, nn
 
 from .diagonal_gaussian_distribution import DiagonalGaussianDistribution
@@ -46,7 +46,7 @@ class Autoencoder(nn.Module, ABC, Generic[T]):
     
     @property
     @abstractmethod
-    def last_layer_weights(self) -> Tensor | None:
+    def last_layer_weights(self) -> Union[Tensor, None]:
         pass
 
     @property

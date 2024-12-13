@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -9,16 +9,16 @@ class DiagonalGaussianDistribution:
     """Custom implementation to allow any shapes"""
 
     mean: Tensor
-    _logvar: Tensor | None
-    _std: Tensor | float
-    _var: Tensor | float
+    _logvar: Union[Tensor, None]
+    _std: Union[Tensor, float]
+    _var: Union[Tensor, float]
     logvar_interval: Tuple[float, float]
 
     def __init__(
         self,
-        mean: Tensor | None = None,
-        logvar: Tensor | None = None,
-        params: Tensor | None = None,
+        mean: Union[Tensor, None] = None,
+        logvar: Union[Tensor, None] = None,
+        params: Union[Tensor, None] = None,
         dim: int = 0,
         logvar_interval: Tuple[float, float] = (-30.0, 20.0)
     ): 
@@ -38,25 +38,25 @@ class DiagonalGaussianDistribution:
         return self._params
         
     @params.setter
-    def params(self, val: Tensor | None) -> None:
+    def params(self, val: Union[Tensor, None]) -> None:
         if val is not None:
             self.mean, self.logvar = val.chunk(2, dim=self.dim)
         self._params = val
 
     @property
-    def logvar(self) -> Tensor | None:
+    def logvar(self) -> Union[Tensor, None]:
         return self._logvar
     
     @property
-    def std(self) -> Tensor | float:
+    def std(self) -> Union[Tensor, float]:
         return self._std
     
     @property
-    def var(self) -> Tensor | float:
+    def var(self) -> Union[Tensor, float]:
         return self._var
 
     @logvar.setter
-    def logvar(self, val: Tensor | None) -> None:
+    def logvar(self, val: Union[Tensor, None]) -> None:
         self._logvar = val
         if self._logvar is not None:
             assert self._logvar.shape == self.mean.shape, "Shapes of mean and logvar must be identical"

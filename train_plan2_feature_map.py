@@ -17,7 +17,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', type=str, default='feature_forward_map_original')
     parser.add_argument('--epochs', type=int, default=7) 
-    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=48)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--level', type=int, default=3, help='2, 3, 4, -1, -2, -3, -4')
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
@@ -275,7 +275,7 @@ if __name__ == '__main__':
     model = Model(args).to(device)
     if args.test:
         model.load_state_dict(torch.load(os.path.join(save_path, 'model_6.pth')))
-        # test1(model, args, save_path, epoch=6)
+        test1(model, args, save_path, epoch=6)
         test2(model, args, save_path, epoch=6)
     else:
         train(model, lr, args, save_path)
