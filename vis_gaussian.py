@@ -281,8 +281,8 @@ def render_projections(
         near = torch.zeros_like(far)
         # width = extents[:, right_axis]
         # height = extents[:, down_axis]
-        width = 101.0
-        height = 101.0
+        width = 101.0 / 2
+        height = 101.0 / 2
         # extrinsics[:, right_axis, 3] = 0
         # extrinsics[:, down_axis, 3] = 0
 
@@ -304,6 +304,8 @@ def render_projections(
 
         out = render_to_decoder_output(projection, 1)
         color = out.color
+        # test_img = to_pil_image(color[0].clip(min=0, max=1))
+        # test_img.save(f"test_sat_{b}.png")
         feature = out.feature_posterior.sample()
         color_out.append(color)
         feature_out.append(feature)

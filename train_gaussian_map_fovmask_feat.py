@@ -1,7 +1,7 @@
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
 import torch
 import numpy as np
@@ -13,15 +13,14 @@ import torch.nn as nn
 from itertools import chain
 
 from dataLoader.KITTI_dataset_gaussian import load_train_data, load_test1_data, load_test2_data
-from kitti_modal_gaussian import Model
+from kitti_modal_gaussian_fovmask_faet import Model
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', type=str, default='gaussian_map_pure_down_unet_fixloss')
+    parser.add_argument('--name', type=str, default='gaussian_map_pure_down_unet_fixloss_fovmask_feat')
     parser.add_argument('--epochs', type=int, default=10) 
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--warm_up_steps', type=float, default=2000)    
     parser.add_argument('--level', type=int, default=3, help='2, 3, 4, -1, -2, -3, -4')
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
     parser.add_argument('--shift_range_lat', type=float, default=20., help='meters')
@@ -294,5 +293,5 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(os.path.join(save_path, 'model_5.pth')))
         test2(model, args, save_path, epoch=0)
     else:
-        model.load_state_dict(torch.load(os.path.join(save_path, 'model_1.pth')))
-        train(model, lr, args, save_path, resume=2)
+        # model.load_state_dict(torch.load(os.path.join(save_path, 'model_1.pth')))
+        train(model, lr, args, save_path, resume=0)

@@ -1,0 +1,1 @@
+tmux new -s gaussian1 'python train_gaussian_map.py; tmux kill-session -t mysession'

@@ -4,7 +4,7 @@ from torch import Tensor, nn
 import data_utils
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
-
+from visualize import sat_features_to_RGB
 class LocalLoss(nn.Module):
     def __init__(self, shift_range_lat, shift_range_lon, rotation_range):
         super(LocalLoss, self).__init__()
@@ -95,18 +95,18 @@ class MutilLocalLoss(nn.Module):
         self.shift_range_lon = shift_range_lon
         self.rotation_range = rotation_range
 
-    def forward(self, grd_feat_list, sat_feat_list, gt_shift_u=None, gt_shift_v=None, gt_heading=None, mode='train'):
+    def forward(self, grd_feat_list, sat_feat_list, grd_masks, gt_shift_u=None, gt_shift_v=None, gt_heading=None, mode='train'):
         corr_maps = []
         for level in range(len(sat_feat_list)):
             meter_per_pixel = self.meters_per_pixel[level]
             sat_feat = sat_feat_list[level]
             grd_feat = grd_feat_list[level]
-
-            # visulize feature map
-            # sat_features_to_RGB(sat_feat, grd_feat)
-
             A = sat_feat.shape[-1]
             B, C, H, W = grd_feat.shape
+            mask = grd_masks[level].unsqueeze(1).repeat(B, C, 1, 1)
+            grd_feat = grd_feat * mask
+            # visulize feature map
+            # sat_features_to_RGB(sat_feat, grd_feat)
             
             # vis projection
             # pred_height_project = self.project_grd_to_map( grd_img_left, pred_height, shift_u, shift_v, heading, left_camera_k, A, ori_grdH, ori_grdW)
@@ -124,9 +124,19 @@ class MutilLocalLoss(nn.Module):
             s_feat = sat_feat.reshape(1, -1, A, A)  # [B, C, H, W]->[1, B*C, H, W]
             corr = F.conv2d(s_feat, g2s_feat, groups=B)[0]  # [B, H, W]
 
-            denominator = F.avg_pool2d(sat_feat.pow(2), (crop_H, crop_W), stride=1, divisor_override=1)  # [B, 4W]
-            denominator = torch.sum(denominator, dim=1)  # [B, H, W]
-            denominator = torch.maximum(torch.sqrt(denominator), torch.ones_like(denominator) * 1e-6)
+            # original denominator
+            # denominator = F.avg_pool2d(sat_feat.pow(2), (crop_H, crop_W), stride=1, divisor_override=1)  # [B, 4W]
+            # denominator = torch.sum(denominator, dim=1)  # [B, H, W]
+            # denominator = torch.maximum(torch.sqrt(denominator), torch.ones_like(denominator) * 1e-6)
+            
+            # fix denominator
+            # l2_norm_kernel = torch.ones_like(g2s_feat).to(g2s_feat.device)
+            l2_norm_kernel = mask
+            sat_feat_squared_sum = F.conv2d(s_feat.pow(2), l2_norm_kernel, stride=1, padding=0, groups=B)[0]
+            denominator = torch.maximum(torch.sqrt(sat_feat_squared_sum + 1e-8), torch.ones_like(sat_feat_squared_sum) * 1e-6)  # 滑动窗口的 L2 范数
+            
+            
+            
             corr = 2 - 2 * corr / denominator
 
             B, corr_H, corr_W = corr.shape
