@@ -1,21 +1,77 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
-    "version": "0.2.0",
-    "configurations": [
+  "version": "0.2.0",
+  "configurations": [
       {
-        "name": "Python: Train model plan2",
+          "name": "Train KITTI Stage 0 Level 1",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "${workspaceFolder}/train_KITTI_weak.py",
+          "args": [
+              "--rotation_range", "10",
+              "--stage", "0",
+              "--level", "1"
+          ],
+          "console": "integratedTerminal"
+      },
+      {
+          "name": "Train KITTI Stage 2 Share 1",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "${workspaceFolder}/train_KITTI_weak.py",
+          "args": [
+              "--rotation_range", "10",
+              "--stage", "2",
+              "--share", "1",
+              "--level", "1",
+              "--ConfGrd", "0",
+              "--contrastive_coe", "1",
+              "--resume", "1"
+          ],
+          "console": "integratedTerminal"
+      },
+      {
+        "name": "Train KITTI Stage 1 Share 1",
         "type": "debugpy",
         "request": "launch",
-        "program": "${file}",
-        "args": [],
-        "console": "integratedTerminal",
-        "env": {
-            "PYTHONPATH": "${workspaceFolder}"
-        },
+        "program": "${workspaceFolder}/train_KITTI_weak.py",
+        "args": [
+            "--rotation_range", "10",
+            "--stage", "1",
+            "--share", "1",
+            "--level", "1",
+            "--ConfGrd", "0",
+            "--contrastive_coe", "1"
+        ],
+        "console": "integratedTerminal"
+    },
+      {
+          "name": "Train KITTI Stage 1 Share 1 ConfGrd 1 Level 1",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "${workspaceFolder}/train_KITTI_weak.py",
+          "args": [
+              "--rotation_range", "10",
+              "--stage", "1",
+              "--share", "1",
+              "--ConfGrd", "1",
+              "--level", "1"
+          ],
+          "console": "integratedTerminal"
+      },
+      {
+          "name": "Train KITTI Stage 1 Share 1 ConfGrd 1 Level 1 GPS Error Coe 1",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "${workspaceFolder}/train_KITTI_weak.py",
+          "args": [
+              "--rotation_range", "10",
+              "--stage", "1",
+              "--share", "1",
+              "--ConfGrd", "1",
+              "--level", "1",
+              "--GPS_error_coe", "1"
+          ],
+          "console": "integratedTerminal"
       }
-    ],
-  }
-  
-  
+  ]
+}

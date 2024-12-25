@@ -1,7 +1,7 @@
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
 import torch
 import numpy as np
@@ -17,7 +17,7 @@ from kitti_modal_gaussian_fovmask import Model
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', type=str, default='gaussian_map_pure_down_unet_fixloss_fovmask')
+    parser.add_argument('--name', type=str, default='gaussian_map_pure_down_unet_fixloss_fovmask2')
     parser.add_argument('--epochs', type=int, default=10) 
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -294,5 +294,5 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(os.path.join(save_path, 'model_5.pth')))
         test2(model, args, save_path, epoch=0)
     else:
-        model.load_state_dict(torch.load(os.path.join(save_path, 'model_1.pth')))
+        model.load_state_dict(torch.load(os.path.join(save_path, 'model_7.pth')))
         train(model, lr, args, save_path, resume=2)

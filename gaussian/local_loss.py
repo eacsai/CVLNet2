@@ -103,8 +103,7 @@ class MutilLocalLoss(nn.Module):
             grd_feat = grd_feat_list[level]
             A = sat_feat.shape[-1]
             B, C, H, W = grd_feat.shape
-            mask = grd_masks[level].unsqueeze(1).repeat(B, C, 1, 1)
-            grd_feat = grd_feat * mask
+            # grd_feat = grd_feat * mask
             # visulize feature map
             # sat_features_to_RGB(sat_feat, grd_feat)
             
@@ -119,6 +118,9 @@ class MutilLocalLoss(nn.Module):
             crop_H = int(A - self.shift_range_lat * 3 / meter_per_pixel)
             crop_W = int(A - self.shift_range_lon * 3 / meter_per_pixel)
             g2s_feat = TF.center_crop(grd_feat, [crop_H, crop_W])
+            mask = TF.center_crop(grd_masks[level].unsqueeze(1).repeat(B, C, 1, 1), [crop_H, crop_W])
+            g2s_feat = g2s_feat * mask
+            
             g2s_feat = F.normalize(g2s_feat.reshape(B, -1)).reshape(B, -1, crop_H, crop_W)
 
             s_feat = sat_feat.reshape(1, -1, A, A)  # [B, C, H, W]->[1, B*C, H, W]
@@ -134,8 +136,6 @@ class MutilLocalLoss(nn.Module):
             l2_norm_kernel = mask
             sat_feat_squared_sum = F.conv2d(s_feat.pow(2), l2_norm_kernel, stride=1, padding=0, groups=B)[0]
             denominator = torch.maximum(torch.sqrt(sat_feat_squared_sum + 1e-8), torch.ones_like(sat_feat_squared_sum) * 1e-6)  # 滑动窗口的 L2 范数
-            
-            
             
             corr = 2 - 2 * corr / denominator
 

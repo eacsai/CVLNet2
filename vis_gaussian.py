@@ -241,9 +241,12 @@ def render_projections(
     margin: float = 0.1,
     draw_label: bool = True,
     extra_label: str = "",
+    heading: Union[Tensor, None] = None,
 ) -> Float[Tensor, "batch 3 3 height width"]:
     device = gaussians.means.device
     B, _, _ = gaussians.means.shape
+    if heading == None:
+        heading = torch.zeros([B, 1], dtype=torch.float32, device=gaussians.means.device)
     color_out = []
     feature_out = []
     for b in range(B):
@@ -274,7 +277,18 @@ def render_projections(
 
         extrinsics[:, look_axis, 3] = scene_minima[:, look_axis]
         extrinsics[:, 3, 3] = 1
-
+        real_heading = heading[b] * 10.0 / 180 * np.pi
+        cos = torch.cos(-real_heading)
+        sin = torch.sin(-real_heading)
+        zeros = torch.zeros_like(cos)
+        ones = torch.ones_like(cos)
+        R = torch.cat([cos, zeros, -sin, zeros, ones, zeros, sin, zeros, cos], dim=-1)  # shape = [B,9]
+        R = R.view(1, 3, 3)  # shape = [B,3,3]
+        # 将 R 扩展为 4x4 矩阵，形状为 [B, 4, 4]
+        R_4x4 = torch.eye(4, device=device).unsqueeze(0)  # [1,4,4]
+        R_4x4[:, :3, :3] = R  # 替换上半部分为旋转矩阵
+        
+        extrinsics_rotated = torch.bmm(R_4x4, extrinsics)  # [1,4,4]
         # Define the intrinsics for rendering.
         extents = scene_maxima - scene_minima
         far = extents[:, look_axis]
@@ -287,7 +301,7 @@ def render_projections(
         # extrinsics[:, down_axis, 3] = 0
 
         projection: RenderOutput = render_cuda_orthographic(
-            extrinsics,
+            extrinsics_rotated,
             width,
             height,
             near,

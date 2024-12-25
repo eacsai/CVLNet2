@@ -17,7 +17,7 @@ from kitti_modal_gaussian import Model
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', type=str, default='gaussian_map_pure_down_unet_fixloss')
+    parser.add_argument('--name', type=str, default='gaussian_map_pure_down_unet_fixloss2')
     parser.add_argument('--epochs', type=int, default=10) 
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--lr', type=float, default=1e-4)
