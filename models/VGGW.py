@@ -7,9 +7,24 @@ import torch.nn.functional as F
 import torchvision
 import torch
 
-import utils
-
-
+class FeatureHead(nn.Module):
+    def __init__(self, in_channels):
+        super(FeatureHead, self).__init__()
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, 64, kernel_size=(3, 3), stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=(3, 3), stride=2, padding=1),
+        )
+        self.conf1 = nn.Sequential(
+            nn.ReLU(),
+            nn.Conv2d(64, 1, kernel_size=(3, 3), stride=(1, 1), padding=1, bias=False),
+            nn.Sigmoid(),
+        )
+    def forward(self, x):
+        x = self.conv1(x)
+        c1 = nn.Sigmoid()(-self.conf1(x))
+        x = L2_norm(x)
+        return x, c1
 
 class VGGUnet(nn.Module):
     def __init__(self, level, channels=[64, 16, 4]):

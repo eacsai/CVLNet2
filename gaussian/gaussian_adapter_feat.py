@@ -57,11 +57,12 @@ class GaussianAdapter(nn.Module):
         depths: Float[Tensor, "*#batch"],
         opacities: Float[Tensor, "*#batch"],
         raw_gaussians: Float[Tensor, "*#batch _"],
+        grd_feat: Float[Tensor, "batch channels height width"],
         image_shape: tuple[int, int],
         eps: float = 1e-8,
     ) -> Gaussians:
         device = extrinsics.device
-        scales, rotations, color_sh, feature \
+        scales, rotations, color_sh \
             = raw_gaussians.split((3, 4, 3 * self.d_color_sh, 4), dim=-1)
 
         # Map scale features to valid scale range.
@@ -79,7 +80,7 @@ class GaussianAdapter(nn.Module):
         color_sh = rearrange(color_sh, "... (c d_sh) -> ... c d_sh", c=3)
         # feature_sh = rearrange(feature_sh, "... (c d_sh) -> ... c d_sh", c=self.n_feature_channels)
         color_sh = color_sh.broadcast_to((*opacities.shape, 3, self.d_color_sh)) * self.color_sh_mask
-        feature = feature.broadcast_to((*opacities.shape, 4))
+        feature = grd_feat.broadcast_to((*opacities.shape, 4))
 
         # Create world-space covariance matrices.
         covariances = build_covariance(scales, rotations)

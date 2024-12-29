@@ -10,8 +10,8 @@ from einops import rearrange, repeat
 
 from .diagonal_gaussian_distribution import DiagonalGaussianDistribution
 from .encoder import Gaussians
-from gaussian.latent_splat import render_cuda, RenderOutput
-
+# from gaussian.nopo_cuda_splatting import render_cuda
+from gaussian.latent_splat import render_cuda
 DepthRenderingMode = Literal[
     "depth",
     "log",
@@ -21,10 +21,9 @@ DepthRenderingMode = Literal[
 
 @dataclass
 class DecoderOutput:
-    color: Float[Tensor, "batch view 3 height width"]
-    feature_posterior: Union[DiagonalGaussianDistribution, None]
-    mask: Float[Tensor, "batch view height width"]
-    depth: Float[Tensor, "batch view height width"]
+    color: Float[Tensor, "batch 3 height width"]
+    depth: Float[Tensor, "batch height width"]
+    feature: Float[Tensor, "batch channels height width"]
 
 class GrdDecoder(nn.Module):
     def __init__(self) -> None:
@@ -44,15 +43,10 @@ class GrdDecoder(nn.Module):
         near: Float[Tensor, "batch view"],
         far: Float[Tensor, "batch view"],
         image_shape: tuple[int, int],
-        return_colors: bool = True,
-        return_features: bool = True
     ) -> DecoderOutput:
         b, _, _ = extrinsics.shape
-        color_sh = gaussians.color_harmonics \
-            if return_colors and gaussians.color_harmonics is not None else None
-        feature_sh = gaussians.feature_harmonics \
-            if return_features and gaussians.feature_harmonics is not None else None
-        rendered: RenderOutput = render_cuda(
+        color_sh = gaussians.color_harmonics
+        render_out = render_cuda(
             extrinsics,
             intrinsics,
             near,
@@ -61,32 +55,17 @@ class GrdDecoder(nn.Module):
             self.background_color.repeat(b, 1),
             gaussians.means,
             gaussians.covariances,
-            gaussians.opacities,
             color_sh,
-            feature_sh
+            gaussians.opacities,
+            gaussians.features,
         )
-        out = self.render_to_decoder_output(rendered, b)
+        out = DecoderOutput(
+            color=render_out.color,
+            depth=render_out.depth,
+            feature=render_out.feature,
+        )
         return out
 
 
     def last_layer_weights(self) -> Union[Tensor, None]:
         pass
-
-    def render_to_decoder_output(
-        self,
-        render_output: RenderOutput,
-        b: int,
-    ) -> DecoderOutput:
-        if render_output.feature is not None:
-            features = render_output.feature
-            # NOTE background feature = 0 = mean = logvar (of normal distribution)
-            mean, logvar = (features, (1-rearrange(render_output.mask.detach(), "b h w -> b () h w", b=b)).log().expand_as(features))
-            feature_posterior = DiagonalGaussianDistribution(mean, logvar)
-        else:
-            feature_posterior = None
-        return DecoderOutput(
-            color=render_output.color if render_output.color is not None else None,
-            feature_posterior=feature_posterior,
-            mask=render_output.mask,
-            depth=render_output.depth
-        )

@@ -1,3 +1,9 @@
 {
-    "liveServer.settings.port": 5501
+    "liveServer.settings.port": 5502,
+    "cmake.sourceDirectory": "/home/wangqw/video_program/CVLNet2/diff-gaussian-rasterization-w-pose",
+    "files.associations": {
+        "chrono": "cpp",
+        "random": "cpp",
+        "limits": "cpp"
+    }
 }

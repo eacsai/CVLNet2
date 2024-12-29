@@ -67,6 +67,7 @@ def render_cuda(
     gaussian_covariances: Float[Tensor, "batch gaussian 3 3"],
     gaussian_sh_coefficients: Float[Tensor, "batch gaussian 3 d_sh"],
     gaussian_opacities: Float[Tensor, "batch gaussian"],
+    gaussian_features: Float[Tensor, "batch gaussian dim"],
     scale_invariant: bool = True,
     use_sh: bool = True,
     cam_rot_delta: Float[Tensor, "batch 3"] | None = None,
@@ -102,6 +103,7 @@ def render_cuda(
 
     all_images = []
     all_radii = []
+    all_features = []
     all_depths = []
     for i in range(b):
         # Set up a tensor for the gradients of the screen-space means.
@@ -130,9 +132,10 @@ def render_cuda(
 
         row, col = torch.triu_indices(3, 3)
 
-        image, radii, depth, opacity, n_touched = rasterizer(
+        image, feat, radii, depth, opacity, n_touched = rasterizer(
             means3D=gaussian_means[i],
             means2D=mean_gradients,
+            sem = gaussian_features[i],
             shs=shs[i] if use_sh else None,
             colors_precomp=None if use_sh else shs[i, :, 0, :],
             opacities=gaussian_opacities[i, ..., None],
@@ -143,7 +146,8 @@ def render_cuda(
         all_images.append(image)
         all_radii.append(radii)
         all_depths.append(depth.squeeze(0))
-    return torch.stack(all_images), torch.stack(all_depths)
+        all_features.append(feat)
+    return torch.stack(all_images), torch.stack(all_depths), torch.stack(all_features)
 
 
 def render_cuda_orthographic(
@@ -158,6 +162,7 @@ def render_cuda_orthographic(
     gaussian_covariances: Float[Tensor, "batch gaussian 3 3"],
     gaussian_sh_coefficients: Float[Tensor, "batch gaussian 3 d_sh"],
     gaussian_opacities: Float[Tensor, "batch gaussian"],
+    gaussian_features: Float[Tensor, "batch gaussian dim"],
     fov_degrees: float = 0.1,
     use_sh: bool = True,
     dump: dict | None = None,
@@ -200,6 +205,7 @@ def render_cuda_orthographic(
 
     all_images = []
     all_radii = []
+    all_features = []
     for i in range(b):
         # Set up a tensor for the gradients of the screen-space means.
         mean_gradients = torch.zeros_like(gaussian_means[i], requires_grad=True)
@@ -227,9 +233,10 @@ def render_cuda_orthographic(
 
         row, col = torch.triu_indices(3, 3)
 
-        image, radii, depth, opacity, n_touched = rasterizer(
+        image, feat, radii, depth, opacity, n_touched = rasterizer(
             means3D=gaussian_means[i],
             means2D=mean_gradients,
+            sem = gaussian_features[i],
             shs=shs[i] if use_sh else None,
             colors_precomp=None if use_sh else shs[i, :, 0, :],
             opacities=gaussian_opacities[i, ..., None],
@@ -237,7 +244,8 @@ def render_cuda_orthographic(
         )
         all_images.append(image)
         all_radii.append(radii)
-    return torch.stack(all_images)
+        all_features.append(feat)
+    return torch.stack(all_images), torch.stack(all_features)
 
 
 DepthRenderingMode = Literal["depth", "disparity", "relative_disparity", "log"]

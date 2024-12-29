@@ -18,6 +18,7 @@
           "type": "debugpy",
           "request": "launch",
           "program": "${workspaceFolder}/train_KITTI_weak.py",
+          "justMyCode": false,  // 这里设置为 false
           "args": [
               "--rotation_range", "10",
               "--stage", "2",
@@ -25,9 +26,25 @@
               "--level", "1",
               "--ConfGrd", "0",
               "--contrastive_coe", "1",
-              "--resume", "1"
+              "--name", "test",
           ],
           "console": "integratedTerminal"
+      },
+      {
+        "name": "Train KITTI Stage 3 Share 1",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/train_KITTI_weak.py",
+        "args": [
+            "--rotation_range", "10",
+            "--stage", "3",
+            "--share", "1",
+            "--level", "1",
+            "--ConfGrd", "0",
+            "--contrastive_coe", "1",
+            "--name", "fix_mask_bev",
+        ],
+        "console": "integratedTerminal"
       },
       {
         "name": "Train KITTI Stage 1 Share 1",
@@ -40,10 +57,12 @@
             "--share", "1",
             "--level", "1",
             "--ConfGrd", "0",
-            "--contrastive_coe", "1"
+            "--contrastive_coe", "1",
+            "--name", "test",
+            // "--resume", "2"
         ],
         "console": "integratedTerminal"
-    },
+      },
       {
           "name": "Train KITTI Stage 1 Share 1 ConfGrd 1 Level 1",
           "type": "debugpy",

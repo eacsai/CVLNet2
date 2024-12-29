@@ -145,10 +145,6 @@ class GaussianEncoder(nn.Module):
         #     else 1
         # )
 
-        gaussian_features = rearrange(
-            gaussians.feature,
-            "b r spp c -> b (r spp) c",
-        )
         # gaussian_features = DiagonalGaussianDistribution(
         #     **{"params" if variational else "mean": gaussian_features},
         #     dim=-2

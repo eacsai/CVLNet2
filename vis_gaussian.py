@@ -11,7 +11,7 @@ import numpy as np
 from torchvision import transforms
 from gaussian.decoder import DecoderOutput
 from gaussian.diagonal_gaussian_distribution import DiagonalGaussianDistribution
-from gaussian.latent_splat import render_cuda_orthographic, RenderOutput
+from gaussian.latent_splat import render_cuda_orthographic
 # from gaussian.nopo_cuda_splatting import render_cuda_orthographic
 to_pil_image = transforms.ToPILImage()
 
@@ -35,7 +35,7 @@ class Gaussians:
     covariances: Float[Tensor, "batch gaussian dim dim"]
     opacities: Float[Tensor, "batch gaussian"]
     color_harmonics: Float[Tensor, "batch gaussian 3 d_sh"]
-    feature_harmonics: Union[Tensor, None] = None 
+    features: Float[Tensor, "batch gaussian dim"]
 
 def _sanitize_color(color: Color) -> Float[Tensor, "#channel"]:
     # Convert tensor to list (or individual item).
@@ -254,7 +254,7 @@ def render_projections(
         minima = gaussians.means[b:b+1].min(dim=1).values
         maxima = gaussians.means[b:b+1].max(dim=1).values
         scene_minima, scene_maxima = compute_equal_aabb_with_margin(
-            minima, maxima, margin=margin
+            minima, maxima, margin=margin / 2
         )
 
         look = ["x", "y", "z"]
@@ -300,7 +300,7 @@ def render_projections(
         # extrinsics[:, right_axis, 3] = 0
         # extrinsics[:, down_axis, 3] = 0
 
-        projection: RenderOutput = render_cuda_orthographic(
+        render_out = render_cuda_orthographic(
             extrinsics_rotated,
             width,
             height,
@@ -310,24 +310,19 @@ def render_projections(
             torch.zeros((1, 3), dtype=torch.float32, device=device),
             gaussians.means[b:b+1],
             gaussians.covariances[b:b+1],
-            gaussians.opacities[b:b+1],
             gaussians.color_harmonics[b:b+1],
-            gaussians.feature_harmonics[b:b+1],
-            fov_degrees=1.0,
+            gaussians.opacities[b:b+1],
+            gaussians.features[b:b+1],
+            fov_degrees=10.0,
         )
-
-        out = render_to_decoder_output(projection, 1)
-        color = out.color
-        # test_img = to_pil_image(color[0].clip(min=0, max=1))
-        # test_img.save(f"test_sat_{b}.png")
-        feature = out.feature_posterior.sample()
+        color = render_out.color
+        feature = render_out.feature
         color_out.append(color)
         feature_out.append(feature)
-    
     return torch.cat(color_out, dim=0), torch.cat(feature_out, dim=0)
 
 def render_to_decoder_output(
-    render_output: RenderOutput,
+    render_output,
     b: int,
 ) -> DecoderOutput:
     if render_output.feature is not None:

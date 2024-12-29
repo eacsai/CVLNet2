@@ -82,13 +82,13 @@ def render_cuda(
     background_color: Float[Tensor, "batch 3"],
     gaussian_means: Float[Tensor, "batch gaussian 3"],
     gaussian_covariances: Float[Tensor, "batch gaussian 3 3"],
+    gaussian_color_sh_coefficients: Float[Tensor, "batch gaussian 3 d_sh"],
     gaussian_opacities: Float[Tensor, "batch gaussian"],
-    gaussian_color_sh_coefficients: Union[Tensor, None] = None,
-    gaussian_feature_sh_coefficients: Union[Tensor, None] = None,
+    gaussian_feature: Union[Float[Tensor, "batch gaussian channels"], None] = None,
     scale_invariant: bool = True,
     use_sh: bool = True
 ) -> RenderOutput:
-    assert gaussian_color_sh_coefficients is not None or gaussian_feature_sh_coefficients is not None
+    assert gaussian_color_sh_coefficients is not None or gaussian_feature is not None
     assert use_sh or gaussian_color_sh_coefficients.shape[-1] == 1
 
     # Make sure everything is in a range where numerical issues don't appear.
@@ -109,21 +109,17 @@ def render_cuda(
         if gaussian_color_sh_coefficients is not None:
             color_sh_degree = isqrt(gaussian_color_sh_coefficients.shape[-1]) - 1
             shs = rearrange(gaussian_color_sh_coefficients, "b g xyz n -> b g n xyz").contiguous()
-        if gaussian_feature_sh_coefficients is not None:
+        if gaussian_feature is not None:
             # TODO implement general feature SH conversion in CUDA rasterizer
-            campos = extrinsics[:, :3, 3]
-            dir_pp = gaussian_means - campos.unsqueeze(1)
-            dir_pp_normalized = dir_pp/dir_pp.norm(dim=-1, keepdim=True)
-            features = 0.5 + eval_sh(
-                isqrt(gaussian_feature_sh_coefficients.shape[-1]) - 1, 
-                gaussian_feature_sh_coefficients, 
-                dir_pp_normalized
-            )
+            # campos = extrinsics[:, :3, 3]
+            # dir_pp = gaussian_means - campos.unsqueeze(1)
+            # dir_pp_normalized = dir_pp/dir_pp.norm(dim=-1, keepdim=True)
+            features = gaussian_feature
     else:
         if gaussian_color_sh_coefficients is not None:
             colors_precomp = gaussian_color_sh_coefficients[..., 0]
-        if gaussian_feature_sh_coefficients is not None:
-            features = gaussian_feature_sh_coefficients[..., 0]
+        if gaussian_feature is not None:
+            features = gaussian_feature
 
     b, _, _ = extrinsics.shape
     h, w = image_shape
@@ -197,16 +193,13 @@ def render_cuda_orthographic(
     background_features: Float[Tensor, "batch 3"],
     gaussian_means: Float[Tensor, "batch gaussian 3"],
     gaussian_covariances: Float[Tensor, "batch gaussian 3 3"],
+    gaussian_color_sh_coefficients: Float[Tensor, "batch gaussian 3 d_sh"],
     gaussian_opacities: Float[Tensor, "batch gaussian"],
-    gaussian_color_sh_coefficients: Union[Float[Tensor, "batch gaussian 3 d_sh"], None] = None,
-    gaussian_feature_sh_coefficients: Union[Float[Tensor, "batch gaussian channels d_sh"], None] = None,
+    gaussian_feature: Union[Float[Tensor, "batch gaussian channels"], None] = None,
     fov_degrees: float = 0.1,
     use_sh: bool = True,
     dump: Union[dict, None] = None,
-) -> Tuple[
-        Optional[Float[Tensor, "batch channels height width"]],
-        Optional[Float[Tensor, "batch channels height width"]]
-    ]:
+) -> RenderOutput:
     b, _, _ = extrinsics.shape
     h, w = image_shape
     
@@ -218,21 +211,17 @@ def render_cuda_orthographic(
         if gaussian_color_sh_coefficients is not None:
             color_sh_degree = isqrt(gaussian_color_sh_coefficients.shape[-1]) - 1
             shs = rearrange(gaussian_color_sh_coefficients, "b g xyz n -> b g n xyz").contiguous()
-        if gaussian_feature_sh_coefficients is not None:
+        if gaussian_feature is not None:
             # TODO implement general feature SH conversion in CUDA rasterizer
-            campos = extrinsics[:, :3, 3]
-            dir_pp = gaussian_means - campos.unsqueeze(1)
-            dir_pp_normalized = dir_pp/dir_pp.norm(dim=-1, keepdim=True)
-            features = 0.5 + eval_sh(
-                isqrt(gaussian_feature_sh_coefficients.shape[-1]) - 1, 
-                gaussian_feature_sh_coefficients, 
-                dir_pp_normalized
-            )
+            # campos = extrinsics[:, :3, 3]
+            # dir_pp = gaussian_means - campos.unsqueeze(1)
+            # dir_pp_normalized = dir_pp/dir_pp.norm(dim=-1, keepdim=True)
+            features = gaussian_feature
     else:
         if gaussian_color_sh_coefficients is not None:
             colors_precomp = gaussian_color_sh_coefficients[..., 0]
-        if gaussian_feature_sh_coefficients is not None:
-            features = gaussian_feature_sh_coefficients[..., 0]
+        if gaussian_feature is not None:
+            features = gaussian_feature
 
     # Create fake "orthographic" projection by moving the camera back and picking a
     # small field of view.

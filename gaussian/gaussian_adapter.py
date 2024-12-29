@@ -8,7 +8,7 @@ from torch import Tensor, nn
 from .build_gaussians import get_world_rays
 from .build_gaussians import rotate_sh
 from .build_gaussians import build_covariance
-
+from models.VGGW import L2_norm
 
 @dataclass
 class Gaussians:
@@ -17,7 +17,7 @@ class Gaussians:
     scales: Float[Tensor, "*batch 3"]
     rotations: Float[Tensor, "*batch 4"]
     color_harmonics: Float[Tensor, "*batch 3 _"]
-    feature_harmonics: Float[Tensor, "*batch channels _"]
+    features: Float[Tensor, "*batch channels"]
     opacities: Float[Tensor, " *batch"]
 
 
@@ -35,7 +35,7 @@ class GaussianAdapter(nn.Module):
         n_feature_channels: int
     ):
         super(GaussianAdapter, self).__init__()
-        self.n_feature_channels = n_feature_channels * 2
+        self.n_feature_channels = n_feature_channels
         self.d_color_sh = 25
         self.d_feature_sh = 9
         # Create a mask for the spherical harmonics coefficients. This ensures that at
@@ -47,17 +47,9 @@ class GaussianAdapter(nn.Module):
             persistent=False,
         )
 
-        self.register_buffer(
-            "feature_sh_mask",
-            torch.ones((self.d_feature_sh,), dtype=torch.float32),
-            persistent=False,
-        )
-
         for degree in range(1, 4 + 1):
             self.color_sh_mask[degree**2 : (degree + 1) ** 2] = 0.1 * 0.25**degree
         
-        for degree in range(1, 2 + 1):
-            self.feature_sh_mask[degree**2 : (degree + 1) ** 2] = 0.1 * 0.25**degree
 
     def forward(
         self,
@@ -67,13 +59,19 @@ class GaussianAdapter(nn.Module):
         depths: Float[Tensor, "*#batch"],
         opacities: Float[Tensor, "*#batch"],
         raw_gaussians: Float[Tensor, "*#batch _"],
+        grd_feat: Float[Tensor, "batch channels height width"],
         image_shape: tuple[int, int],
         eps: float = 1e-8,
     ) -> Gaussians:
         device = extrinsics.device
-        scales, rotations, color_sh, feature_sh \
-            = raw_gaussians.split((3, 4, 3 * self.d_color_sh, self.n_feature_channels * self.d_feature_sh), dim=-1)
-
+        if grd_feat is not None:
+            scales, rotations, color_sh \
+                = raw_gaussians.split((3, 4, 3 * self.d_color_sh), dim=-1)
+            features = rearrange(grd_feat, "batch channels height width -> batch (height width) channels").unsqueeze(-2)
+        else:
+            scales, rotations, color_sh, features \
+                = raw_gaussians.split((3, 4, 3 * self.d_color_sh, self.n_feature_channels), dim=-1)
+            features = features
         # Map scale features to valid scale range.
         scale_min = 0.5
         scale_max = 15.0
@@ -87,9 +85,9 @@ class GaussianAdapter(nn.Module):
         rotations = rotations / (rotations.norm(dim=-1, keepdim=True) + eps)
 
         color_sh = rearrange(color_sh, "... (c d_sh) -> ... c d_sh", c=3)
-        feature_sh = rearrange(feature_sh, "... (c d_sh) -> ... c d_sh", c=self.n_feature_channels)
         color_sh = color_sh.broadcast_to((*opacities.shape, 3, self.d_color_sh)) * self.color_sh_mask
-        feature_sh = feature_sh.broadcast_to((*opacities.shape, self.n_feature_channels, self.d_feature_sh)) * self.feature_sh_mask
+            
+        features = features.broadcast_to((*opacities.shape, self.n_feature_channels))
 
         # Create world-space covariance matrices.
         covariances = build_covariance(scales, rotations)
@@ -104,10 +102,10 @@ class GaussianAdapter(nn.Module):
             means=means,
             covariances=covariances,
             color_harmonics=rotate_sh(color_sh, c2w_rotations[..., None, None, None, :, :]),
-            feature_harmonics=rotate_sh(feature_sh, c2w_rotations[..., None, None, None, :, :]),
             opacities=opacities,
             # Note: These aren't yet rotated into world space, but they're only used for
             # exporting Gaussians to ply files. This needs to be fixed...
+            features=features,
             scales=scales,
             rotations=rotations.broadcast_to((*scales.shape[:-1], 4)),
         )

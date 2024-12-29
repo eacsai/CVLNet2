@@ -617,7 +617,7 @@ def test2(net_test, args, save_path):
     return result
 
 
-def train(net, args, save_path):
+def train(net, args, save_path, name_path):
     bestRankResult = 0.0
 
     time_start = time.time()
@@ -631,10 +631,11 @@ def train(net, args, save_path):
             else:
                 params = list(net.SatFeatureNet.parameters()) + list(net.TransRefine.parameters())
             optimizer = optim.Adam(params, lr=1e-4)
-        elif args.stage == 1:
+        elif args.stage == 1 or args.stage == 3:
 
             if args.share:
                 # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.FeatureForT.parameters())
+                # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.dino_feat.parameters())
                 params = net.FeatureForT.parameters()
             else:
                 params = list(net.GrdFeatureForT.parameters()) + list(net.SatFeatureForT.parameters())
@@ -703,7 +704,7 @@ def train(net, args, save_path):
                 thetas_delta0 = torch.abs(thetas - gt_theta[:, None, None])  # [B, N_iters, level]
                 thetas_delta = torch.mean(thetas_delta0, dim=0)
                 if global_step > 20000:
-                    lpips_loss = net.lpips.forward(g2s_feat_dict.color, grd_left_imgs, normalize=True).mean()
+                    lpips_loss = net.lpips.forward(g2s_feat_dict.color.clip(min=0, max=1), grd_left_imgs, normalize=True).mean()
                 else:
                     lpips_loss = torch.tensor(0, dtype=torch.float32, device=grd_left_imgs.device)
                 loss = depth_l1_loss + rgb_mse_loss * 20 + thetas_delta[-1, -1] * 10 + lpips_loss
@@ -720,7 +721,7 @@ def train(net, args, save_path):
                     
                     time_start = time_end
 
-            elif args.stage == 1:
+            elif args.stage == 1 or args.stage == 3:
                 
                 corr_maps = batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, masks=mask_dict)
                 # corr_loss = weak_supervise_loss(corr_maps)
@@ -837,7 +838,7 @@ def train(net, args, save_path):
                 # gt heading here just to compute the GPS position
 
 
-                loss = args.contrastive_coe * corr_loss + args.GPS_error_coe * GPS_loss
+                loss = args.contrastive_coe * corr_loss * 20 + args.GPS_error_coe * GPS_loss + render_loss
 
                 R_err = torch.abs(thetas[:, -1, -1].reshape(-1) - gt_heading.reshape(-1)).mean() * args.rotation_range
 
@@ -859,17 +860,23 @@ def train(net, args, save_path):
                     time_start = time_end
 
         print('Save Model ...')
-        if not os.path.exists(save_path):
-            os.makedirs(save_path)
+        if args.stage == 0 or args.stage == 2:
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
 
-        torch.save(net.state_dict(), os.path.join(save_path, 'model_' + str(epoch) + '.pth'))
+            torch.save(net.state_dict(), os.path.join(save_path, 'model_' + str(epoch) + '.pth'))
+        else:
+            if not os.path.exists(name_path):
+                os.makedirs(name_path)
 
-        if args.stage == 2:
+            torch.save(net.state_dict(), os.path.join(name_path, 'model_' + str(epoch) + '.pth'))
+
+        if args.stage == 0 or args.stage == 2:
             test1_orien(net, args, save_path, epoch)
             test2_orien(net, args, save_path, epoch)
         else:    
-            test1(net, args, save_path, epoch)
-            test2(net, args, save_path)
+            test1(net, args, name_path, epoch)
+            test2(net, args, name_path)
 
     print('Finished Training')
 
@@ -877,7 +884,7 @@ def train(net, args, save_path):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--resume', type=int, default=0, help='resume the trained model')
-    parser.add_argument('--test', type=int, default=1, help='test with trained model')
+    parser.add_argument('--test', type=int, default=0, help='test with trained model')
 
     parser.add_argument('--epochs', type=int, default=3, help='number of training epochs')
 
@@ -887,7 +894,7 @@ def parse_args():
     parser.add_argument('--shift_range_lat', type=float, default=20., help='meters')
     parser.add_argument('--shift_range_lon', type=float, default=20., help='meters')
 
-    parser.add_argument('--batch_size', type=int, default=12, help='batch size')
+    parser.add_argument('--batch_size', type=int, default=8, help='batch size')
 
     parser.add_argument('--level', type=str, default='0_2', help=' ')
     parser.add_argument('--channels', type=str, default='64_16_4', help='64_16_4 ')
@@ -917,7 +924,8 @@ def parse_args():
 
     parser.add_argument('--supervise_amount', type=float, default=1.0,
                         help='0.1, 0.2, 0.3, ..., 1')
-
+    parser.add_argument('--name', type=str, default='test', help='')
+    
     args = parser.parse_args()
 
     return args
@@ -948,8 +956,9 @@ def getSavePath(args):
 
 
     print('save_path:', save_path)
+    name_path = save_path + '_' + args.name
 
-    return save_path, restore_path
+    return save_path, restore_path, name_path
 
 
 if __name__ == '__main__':
@@ -963,7 +972,7 @@ if __name__ == '__main__':
 
     args = parse_args()
 
-    save_path, restore_path = getSavePath(args)
+    save_path, restore_path, name_path = getSavePath(args)
 
     net = Model(args, device=device)
 
@@ -974,7 +983,7 @@ if __name__ == '__main__':
 
     if args.test:
         net.load_state_dict(torch.load(os.path.join(
-            save_path.replace('lat' + str(args.shift_range_lat) + 'm_lon' + str(args.shift_range_lon), 'lat20.0m_lon20.0'),
+            name_path.replace('lat' + str(args.shift_range_lat) + 'm_lon' + str(args.shift_range_lon), 'lat20.0m_lon20.0'),
             'model_0.pth')), strict=False)
         # test1(net, args, save_path, epoch=2)
         # test2(net, args, save_path)
@@ -988,22 +997,32 @@ if __name__ == '__main__':
     else:
 
         if args.resume:
-            net.load_state_dict(torch.load(os.path.join(save_path, 'model_' + str(args.resume - 1) + '.pth')))
+            net.load_state_dict(torch.load(os.path.join(name_path, 'model_' + str(args.resume - 1) + '.pth')))
             print("resume from " + 'model_' + str(args.resume - 1) + '.pth')
         
-        elif args.stage == 1 and args.rotation_range > 0:
+        elif (args.stage == 1) and args.rotation_range > 0:
 
             net.load_state_dict(torch.load(
-                os.path.join(save_path.replace('Stage1', 'Stage2').replace(args.proj, 'geo'), 'model_1.pth')), strict=False)
-            print("load pretrained model from Stage0:")
+                os.path.join(save_path.replace('Stage1', 'Stage2').replace(args.proj, 'geo').replace(f'Level{args.level}', 'Level1'), 'model_2.pth')), strict=False)
+            print("load pretrained model from Stage2:")
             print(os.path.join(save_path.replace('Stage1', 'Stage2'),
-                               'model_1.pth'))
+                               'model_2.pth'))
+        elif (args.stage == 3) and args.rotation_range > 0:
+            if args.share:
+                net.load_state_dict(torch.load(
+                    os.path.join(save_path.replace('Stage3', 'Stage2').replace(args.proj, 'geo'), 'model_2.pth')), strict=False)
+            else:
+                net.load_state_dict(torch.load(
+                    os.path.join(save_path.replace('Stage3', 'Stage2').replace(args.proj, 'geo') + '_Share', 'model_2.pth')), strict=False)
+            print("load pretrained model from Stage2:")
+            print(os.path.join(save_path.replace('Stage3', 'Stage2'),
+                               'model_2.pth'))
         elif args.stage == 2 and args.rotation_range > 0:
 
             net.load_state_dict(torch.load(
-                os.path.join(restore_path.replace('Stage2', 'Stage0').replace(args.proj, 'geo'), 'model_2.pth')), strict=False)
+                os.path.join(save_path.replace('Stage2', 'Stage0').replace(args.proj, 'geo'), 'model_2.pth')), strict=False)
             print("load pretrained model from Stage0:")
-            print(os.path.join(restore_path.replace('Stage2', 'Stage0'),
+            print(os.path.join(save_path.replace('Stage2', 'Stage0'),
                                'model_2.pth'))
         if args.visualize:
             net.load_state_dict(torch.load(os.path.join(save_path, 'model_2.pth')), strict=False)
@@ -1013,7 +1032,7 @@ if __name__ == '__main__':
 
         lr = args.lr
 
-        train(net, args, save_path)
+        train(net, args, save_path, name_path)
 
 
 

@@ -20,20 +20,7 @@ class Gaussians:
     covariances: Float[Tensor, "batch gaussian dim dim"]
     opacities: Float[Tensor, "batch gaussian"]
     color_harmonics: Float[Tensor, "batch gaussian 3 color_d_sh"]
-    feature_harmonics: Float[Tensor, "batch gaussian 4 feature_d_sh"]
-
-@dataclass
-class VariationalGaussians(Gaussians):
-    feature_harmonics: Union[DiagonalGaussianDistribution, None] = None
-
-    def _to_gaussians(self, feature_harmonics: Float[Tensor, "batch gaussian channels d_feature_sh"]) -> Gaussians:
-        return Gaussians(self.means, self.covariances, self.opacities, self.color_harmonics, feature_harmonics)
-    def flatten(self) -> Gaussians:
-        return self._to_gaussians(self.feature_harmonics.params)
-    def mode(self) -> Gaussians:
-        return self._to_gaussians(self.feature_harmonics.mode())
-    def sample(self) -> Gaussians:
-        return self._to_gaussians(self.feature_harmonics.sample())
+    features: Float[Tensor, "batch gaussian dim"]
 
 class GaussianEncoder(nn.Module):
     def __init__(self) -> None:
@@ -43,9 +30,8 @@ class GaussianEncoder(nn.Module):
             nn.ReLU(),
             nn.Linear(self.backbone.d_out, 128),
         )
-
         self.depth_predictor = DepthPredictorMonocular()
-        self.gaussian_adapter = GaussianAdapter(n_feature_channels=4)
+        self.gaussian_adapter = GaussianAdapter(n_feature_channels=64)
         
         self.to_opacity = nn.Sequential(
             nn.ReLU(),
@@ -56,7 +42,14 @@ class GaussianEncoder(nn.Module):
             nn.ReLU(),
             nn.Linear(
                 128,
-                156,
+                84,
+            ),
+        )
+        self.to_gaussians_feat = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(
+                128,
+                148,
             ),
         )
         # High resolution skip only required in case of now downscaling
@@ -76,6 +69,7 @@ class GaussianEncoder(nn.Module):
     def forward(
         self,
         img: Float[Tensor, "batch channels height width"],
+        grd_feat: Union[Float[Tensor, "batch channels height width"] | None],
         camera_k: Float[Tensor, "batch 3 3"],
         extrinsics: Float[Tensor, "batch 4 4"],
         global_step: int,
@@ -84,7 +78,7 @@ class GaussianEncoder(nn.Module):
         deterministic: bool = False,
         visualization_dump: Optional[dict] = None,
         variational: bool = True,
-    ) -> VariationalGaussians:
+    ) -> Gaussians:
         b = img.shape[:1]
         features = self.backbone(img)
         device = features.device
@@ -111,7 +105,11 @@ class GaussianEncoder(nn.Module):
         # Convert the features and depths into Gaussians.
         xy_ray, _ = sample_image_grid((h, w), device)
         xy_ray = rearrange(xy_ray, "h w xy -> (h w) () xy")
-        gaussians = self.to_gaussians(features).unsqueeze(-2)
+        if grd_feat is not None:
+            gaussians = self.to_gaussians(features).unsqueeze(-2)
+        else:
+            gaussians = self.to_gaussians_feat(features).unsqueeze(-2)
+        
         offset_xy = gaussians[..., :2].sigmoid()
         pixel_size = 1 / torch.tensor((w, h), dtype=torch.float32, device=device)
         xy_ray = xy_ray + (offset_xy - 0.5) * pixel_size
@@ -123,6 +121,7 @@ class GaussianEncoder(nn.Module):
             depths,
             self.map_pdf_to_opacity(densities) / gpp,
             gaussians[..., 2:],
+            grd_feat,
             (h, w),
         )
 
@@ -145,15 +144,7 @@ class GaussianEncoder(nn.Module):
         #     else 1
         # )
 
-        gaussian_features = rearrange(
-            gaussians.feature_harmonics,
-            "b r spp c d_f_sh -> b (r spp) c d_f_sh",
-        )
-        gaussian_features = DiagonalGaussianDistribution(
-            **{"params" if variational else "mean": gaussian_features},
-            dim=-2
-        )
-        return VariationalGaussians(
+        return Gaussians(
             rearrange(
                 gaussians.means,
                 "b r spp xyz -> b (r spp) xyz",
@@ -170,7 +161,10 @@ class GaussianEncoder(nn.Module):
                 gaussians.color_harmonics,
                 "b r spp c d_c_sh -> b (r spp) c d_c_sh",
             ),
-            gaussian_features,
+            rearrange(
+                gaussians.features,
+                "b r spp c -> b (r spp) c",
+            )
         )
 
     @property
