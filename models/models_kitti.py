@@ -30,6 +30,7 @@ from gaussian.decoder import GrdDecoder
 from vis_gaussian import render_projections
 from models.dino_feat import DinoFeat
 from models.VGGW import L2_norm
+from models.bev_net import BEVNet
 
 to_pil_image = transforms.ToPILImage()
 EPS = utils.EPS
@@ -45,11 +46,14 @@ class Model(nn.Module):
         self.level = sorted([int(item) for item in args.level.split('_')])
         self.N_iters = args.N_iters
         self.channels = [int(item) for item in self.args.channels.split('_')]
+        self.gs_channels = [64, 32, 4]
 
-        self.SatFeatureNet = VGGUnet(self.level, self.channels)
+        self.SatFeatureNet = VGGUnet(self.level, self.gs_channels)
         self.gaussian_encoder = GaussianEncoder()
         self.grd_decoder = GrdDecoder()
         self.lpips = LPIPS(net="vgg")
+        self.near = torch.ones(args.batch_size, 1).to(device) * 0.5
+        self.far = torch.ones(args.batch_size, 1).to(device) * 160
         # self.dino_feat = DinoFeat()
         convert_to_buffer(self.lpips, persistent=False)
 
@@ -57,13 +61,12 @@ class Model(nn.Module):
             self.Dec4 = Decoder4(self.channels[0])
             self.Dec2 = Decoder2(self.channels[0:2])
             self.CVattn = CrossViewAttention(blocks=2, dim=256, heads=4, dim_head=16, qkv_bias=False)
-
         # self.gaussian_proj = FeatureHead(64)
         if self.args.share:
-            self.FeatureForT = VGGUnet(self.level, self.channels)
+            self.FeatureForT = VGGUnet(self.level, self.gs_channels)
         else:
-            self.GrdFeatureForT = VGGUnet(self.level, self.channels)
-            self.SatFeatureForT = VGGUnet(self.level, self.channels)
+            self.GrdFeatureForT = VGGUnet(self.level, self.gs_channels)
+            self.SatFeatureForT = VGGUnet(self.level, self.gs_channels)
 
         self.meters_per_pixel = {}
         meter_per_pixel = utils.get_meter_per_pixel()
@@ -75,8 +78,6 @@ class Model(nn.Module):
         self.coe_R = nn.Parameter(torch.tensor(-5., dtype=torch.float32), requires_grad=True)
         self.coe_T = nn.Parameter(torch.tensor(-3., dtype=torch.float32), requires_grad=True)
 
-        # if self.args.use_uncertainty:
-        #     self.uncertain_net = Uncertainty(self.channels)
 
         self.masks = {}
         for level in range(4):
@@ -100,300 +101,31 @@ class Model(nn.Module):
             # [B, H, W, 2], [B, H, W, 1]
             self.masks[level] = mask[:, :, :, 0]
 
+        # if self.args.use_uncertainty:
+        #     self.uncertain_net = Uncertainty(self.channels)
+        # self.bev_net = BEVNet()
         torch.autograd.set_detect_anomaly(True)
         # Running the forward pass with detection enabled will allow the backward pass to print the traceback of the forward operation that created the failing backward function.
         # Any backward computation that generate “nan” value will raise an error.
-
-    def grd_projection(self, grd_img_left, grd_depth, left_camera_k, deterministic=False):
-        # initial
-        self.camera_k = left_camera_k.clone()
-        self.camera_k[:, :1, :] = self.camera_k[:, :1, :] / grd_depth.shape[2]  # original size input into feature get network/ output of feature get network
-        self.camera_k[:, 1:2, :] = self.camera_k[:, 1:2, :] / grd_depth.shape[1]
-        
-        grd_depth = grd_depth.unsqueeze(-1)
-        self.grd_depth = F.interpolate(grd_depth.permute(0,3,1,2), size=(128, 512), mode='bilinear', align_corners=False).permute(0,2,3,1)
-        B, _, self.ori_grdH, self.ori_grdW = grd_img_left.shape
-        self.extrinsics = torch.eye(4).to(grd_img_left.device).unsqueeze(0).repeat(B, 1, 1)
-        near = torch.ones(B).to(grd_img_left.device) * 0.5
-        far = torch.ones(B).to(grd_img_left.device) * 160
-        # Encode the context images.
-        self.gaussians = self.gaussian_encoder(
-            self.grd_img_left,
-            None, 
-            self.camera_k, 
-            self.extrinsics, 
-            0,
-            near,
-            far, 
-            deterministic,
-            True,
-        )
-        decoder_out = self.grd_decoder.forward(
-            self.gaussians,     # Sample from variational Gaussians
-            self.extrinsics,
-            self.camera_k,
-            near,
-            far,
-            (128, 512),
-        )
-        return decoder_out
 
     def grd_feat_projection(self, grd_img_left, grd_feat, grd_depth, left_camera_k, deterministic=False):
         # initial
         self.camera_k = left_camera_k.clone()
         self.camera_k[:, :1, :] = self.camera_k[:, :1, :] / grd_depth.shape[2]  # original size input into feature get network/ output of feature get network
         self.camera_k[:, 1:2, :] = self.camera_k[:, 1:2, :] / grd_depth.shape[1]
-        
-        grd_depth = grd_depth.unsqueeze(-1)
-        self.grd_depth = F.interpolate(grd_depth.permute(0,3,1,2), size=(128, 512), mode='bilinear', align_corners=False).permute(0,2,3,1)
-        B, _, self.ori_grdH, self.ori_grdW = grd_img_left.shape
-        self.extrinsics = torch.eye(4).to(grd_img_left.device).unsqueeze(0).repeat(B, 1, 1)
-        near = torch.ones(B).to(grd_img_left.device) * 0.5
-        far = torch.ones(B).to(grd_img_left.device) * 160
+        self.camera_k = self.camera_k.unsqueeze(1)
+        self.extrinsics = torch.eye(4).to(grd_img_left.device).unsqueeze(0).repeat(grd_feat.shape[0], 1, 1).unsqueeze(1)
         # Encode the context images.
         self.gaussians = self.gaussian_encoder(
             self.grd_img_left,
             grd_feat, 
             self.camera_k, 
             self.extrinsics, 
-            0,
-            near,
-            far, 
-            deterministic,
-            True,
+            self.near,
+            self.far, 
+            deterministic
         )
-        decoder_out = self.grd_decoder.forward(
-            self.gaussians,     # Sample from variational Gaussians
-            self.extrinsics,
-            self.camera_k,
-            near,
-            far,
-            (64, 256),
-        )
-        return decoder_out
-
-    def initialize_grd_encoder(self):
-        self.GrdFeatureNet = copy.deepcopy(self.SatFeatureNet)
-
-    def initialize_grd_encoder_for_T(self):
-        self.GrdFeatureForT = copy.deepcopy(self.SatFeatureNet)
-
-    def grd_img2cam(self, grd_H, grd_W, ori_grdH, ori_grdW):
-
-        ori_camera_k = torch.tensor([[[582.9802, 0.0000, 496.2420],
-                                      [0.0000, 482.7076, 125.0034],
-                                      [0.0000, 0.0000, 1.0000]]],
-                                    dtype=torch.float32, requires_grad=True)  # [1, 3, 3]
-
-        camera_height = utils.get_camera_height()
-
-        camera_k = ori_camera_k.clone()
-        camera_k[:, :1, :] = ori_camera_k[:, :1,
-                             :] * grd_W / ori_grdW  # original size input into feature get network/ output of feature get network
-        camera_k[:, 1:2, :] = ori_camera_k[:, 1:2, :] * grd_H / ori_grdH
-        camera_k_inv = torch.inverse(camera_k)  # [B, 3, 3]
-
-        v, u = torch.meshgrid(torch.arange(0, grd_H, dtype=torch.float32),
-                              torch.arange(0, grd_W, dtype=torch.float32))
-        uv1 = torch.stack([u, v, torch.ones_like(u)], dim=-1).unsqueeze(dim=0)  # [1, grd_H, grd_W, 3]
-        xyz_w = torch.sum(camera_k_inv[:, None, None, :, :] * uv1[:, :, :, None, :], dim=-1)  # [1, grd_H, grd_W, 3]
-
-        w = camera_height / torch.where(torch.abs(xyz_w[..., 1:2]) > utils.EPS, xyz_w[..., 1:2],
-                                        utils.EPS * torch.ones_like(xyz_w[..., 1:2]))  # [BN, grd_H, grd_W, 1]
-        xyz_grd = xyz_w * w  # [1, grd_H, grd_W, 3] under the grd camera coordinates
-        # xyz_grd = xyz_grd.reshape(B, N, grd_H, grd_W, 3)
-
-        mask = (xyz_grd[..., -1] > 0).float()  # # [1, grd_H, grd_W]
-
-        return xyz_grd, mask, xyz_w
-
-    def grd2cam2world2sat(self, ori_shift_u, ori_shift_v, ori_heading, level,
-                          satmap_sidelength, require_jac=False, gt_depth=None):
-        '''
-        realword: X: south, Y:down, Z: east
-        camera: u:south, v: down from center (when heading east, need to rotate heading angle)
-        Args:
-            ori_shift_u: [B, 1]
-            ori_shift_v: [B, 1]
-            heading: [B, 1]
-            XYZ_1: [H,W,4]
-            ori_camera_k: [B,3,3]
-            grd_H:
-            grd_W:
-            ori_grdH:
-            ori_grdW:
-
-        Returns:
-        '''
-        B, _ = ori_heading.shape
-        heading = ori_heading * self.args.rotation_range / 180 * np.pi
-        shift_u = ori_shift_u * self.args.shift_range_lon
-        shift_v = ori_shift_v * self.args.shift_range_lat
-
-        cos = torch.cos(heading)
-        sin = torch.sin(heading)
-        zeros = torch.zeros_like(cos)
-        ones = torch.ones_like(cos)
-        R = torch.cat([cos, zeros, -sin, zeros, ones, zeros, sin, zeros, cos], dim=-1)  # shape = [B, 9]
-        R = R.view(B, 3, 3)  # shape = [B, N, 3, 3]
-        # this R is the inverse of the R in G2SP
-
-        camera_height = utils.get_camera_height()
-        # camera offset, shift[0]:east,Z, shift[1]:north,X
-        height = camera_height * torch.ones_like(shift_u[:, :1])
-        T0 = torch.cat([shift_v, height, -shift_u], dim=-1)  # shape = [B, 3]
-        # T0 = torch.unsqueeze(T0, dim=-1)  # shape = [B, N, 3, 1]
-        # T = torch.einsum('bnij, bnj -> bni', -R, T0) # [B, N, 3]
-        T = torch.sum(-R * T0[:, None, :], dim=-1)  # [B, 3]
-
-        # The above R, T define transformation from camera to world
-
-        if self.args.use_gt_depth and gt_depth != None:
-            xyz_w = self.xyz_grds[level][2].detach().to(ori_shift_u.device).repeat(B, 1, 1, 1)
-            H, W = xyz_w.shape[1:-1]
-            depth = F.interpolate(gt_depth[:, None, :, :], (H, W))
-            xyz_grd = xyz_w * depth.permute(0, 2, 3, 1)
-            mask = (gt_depth != -1).float()
-            mask = F.interpolate(mask[:, None, :, :], (H, W), mode='nearest')
-            mask = mask[:, 0, :, :]
-        else:
-            xyz_grd = self.xyz_grds[level][0].detach().to(ori_shift_u.device).repeat(B, 1, 1, 1)
-            mask = self.xyz_grds[level][1].detach().to(ori_shift_u.device).repeat(B, 1, 1)  # [B, grd_H, grd_W]
-        grd_H, grd_W = xyz_grd.shape[1:3]
-
-        xyz = torch.sum(R[:, None, None, :, :] * xyz_grd[:, :, :, None, :], dim=-1) + T[:, None, None, :]
-        # [B, grd_H, grd_W, 3]
-        # zx0 = torch.stack([xyz[..., 2], xyz[..., 0]], dim=-1)  # [B, N, grd_H, grd_W, 2]
-        R_sat = torch.tensor([0, 0, 1, 1, 0, 0], dtype=torch.float32, device=ori_shift_u.device, requires_grad=True) \
-            .reshape(2, 3)
-        zx = torch.sum(R_sat[None, None, None, :, :] * xyz[:, :, :, None, :], dim=-1)
-        # [B, grd_H, grd_W, 2]
-        # assert zx == zx0
-
-        meter_per_pixel = utils.get_meter_per_pixel()
-        meter_per_pixel *= utils.get_process_satmap_sidelength() / satmap_sidelength
-        sat_uv = zx / meter_per_pixel + satmap_sidelength / 2  # [B, grd_H, grd_W, 2] sat map uv
-
-        if require_jac:
-            dR_dtheta = self.args.rotation_range / 180 * np.pi * \
-                        torch.cat([-sin, zeros, -cos, zeros, zeros, zeros, cos, zeros, -sin],
-                                  dim=-1)  # shape = [B, N, 9]
-            dR_dtheta = dR_dtheta.view(B, 3, 3)
-            # R_zeros = torch.zeros_like(dR_dtheta)
-
-            dT0_dshiftu = self.args.shift_range_lon * torch.tensor([0., 0., -1.], dtype=torch.float32,
-                                                                   device=shift_u.device,
-                                                                   requires_grad=True).view(1, 3).repeat(B, 1)
-            dT0_dshiftv = self.args.shift_range_lat * torch.tensor([1., 0., 0.], dtype=torch.float32,
-                                                                   device=shift_u.device,
-                                                                   requires_grad=True).view(1, 3).repeat(B, 1)
-            # T0_zeros = torch.zeros_like(dT0_dx)
-
-            dxyz_dshiftu = torch.sum(-R * dT0_dshiftu[:, None, :], dim=-1)[:, None, None, :]. \
-                repeat([1, grd_H, grd_W, 1])  # [B, grd_H, grd_W, 3]
-            dxyz_dshiftv = torch.sum(-R * dT0_dshiftv[:, None, :], dim=-1)[:, None, None, :]. \
-                repeat([1, grd_H, grd_W, 1])  # [B, grd_H, grd_W, 3]
-            dxyz_dtheta = torch.sum(dR_dtheta[:, None, None, :, :] * xyz_grd[:, :, :, None, :], dim=-1) + \
-                          torch.sum(-dR_dtheta * T0[:, None, :], dim=-1)[:, None, None, :]
-
-            duv_dshiftu = 1 / meter_per_pixel * \
-                          torch.sum(R_sat[None, None, None, :, :] * dxyz_dshiftu[:, :, :, None, :], dim=-1)
-            # [B, grd_H, grd_W, 2]
-            duv_dshiftv = 1 / meter_per_pixel * \
-                          torch.sum(R_sat[None, None, None, :, :] * dxyz_dshiftv[:, :, :, None, :], dim=-1)
-            # [B, grd_H, grd_W, 2]
-            duv_dtheta = 1 / meter_per_pixel * \
-                         torch.sum(R_sat[None, None, None, :, :] * dxyz_dtheta[:, :, :, None, :], dim=-1)
-            # [B, grd_H, grd_W, 2]
-
-            # duv_dshift = torch.stack([duv_dx, duv_dy], dim=0)
-            # duv_dtheta = duv_dtheta.unsqueeze(dim=0)
-
-            return sat_uv, mask, duv_dshiftu, duv_dshiftv, duv_dtheta
-
-        return sat_uv, mask, None, None, None
-
-    def project_map_to_grd(self, sat_f, sat_c, shift_u, shift_v, heading, level, require_jac=True, gt_depth=None):
-        '''
-        Args:
-            sat_f: [B, C, H, W]
-            sat_c: [B, 1, H, W]
-            shift_u: [B, 2]
-            shift_v: [B, 2]
-            heading: [B, 1]
-            camera_k: [B, 3, 3]
-
-            ori_grdH:
-            ori_grdW:
-
-        Returns:
-
-        '''
-        B, C, satmap_sidelength, _ = sat_f.size()
-        A = satmap_sidelength
-
-        uv, mask, jac_shiftu, jac_shiftv, jac_heading = self.grd2cam2world2sat(shift_u, shift_v, heading, level,
-                                                                               satmap_sidelength, require_jac, gt_depth)
-        # [B, H, W, 2], [B, H, W], [B, H, W, 2], [B, H, W, 2], [B,H, W, 2]
-
-        B, grd_H, grd_W, _ = uv.shape
-        if require_jac:
-            jac = torch.stack([jac_shiftu, jac_shiftv, jac_heading], dim=0)  # [3, B, H, W, 2]
-
-            # jac = jac.reshape(3, -1, grd_H, grd_W, 2)
-        else:
-            jac = None
-
-        # print('==================')
-        # print(jac.shape)
-        # print('==================')
-
-        sat_f_trans, new_jac = grid_sample(sat_f,
-                                           uv,
-                                           jac)
-        sat_f_trans = sat_f_trans * mask[:, None, :, :]
-        if require_jac:
-            new_jac = new_jac * mask[None, :, None, :, :]
-
-        if sat_c is not None:
-            sat_c_trans, _ = grid_sample(sat_c, uv)
-            sat_c_trans = sat_c_trans * mask[:, None, :, :]
-        else:
-            sat_c_trans = None
-
-        return sat_f_trans, sat_c_trans, new_jac, uv * mask[:, :, :, None], mask
-
-    def sat2world(self, satmap_sidelength):
-        # satellite: u:east , v:south from bottomleft and u_center: east; v_center: north from center
-        # realword: X: south, Y:down, Z: east   origin is set to the ground plane
-
-        # meshgrid the sat pannel
-        i = j = torch.arange(0, satmap_sidelength).cuda()  # to(self.device)
-        ii, jj = torch.meshgrid(i, j)  # i:h,j:w
-
-        # uv is coordinate from top/left, v: south, u:east
-        uv = torch.stack([jj, ii], dim=-1).float()  # shape = [satmap_sidelength, satmap_sidelength, 2]
-
-        # sat map from top/left to center coordinate
-        u0 = v0 = satmap_sidelength // 2
-        uv_center = uv - torch.tensor(
-            [u0, v0]).cuda()  # .to(self.device) # shape = [satmap_sidelength, satmap_sidelength, 2]
-
-        # affine matrix: scale*R
-        meter_per_pixel = utils.get_meter_per_pixel()
-        meter_per_pixel *= utils.get_process_satmap_sidelength() / satmap_sidelength
-        R = torch.tensor([[0, 1], [1, 0]]).float().cuda()  # to(self.device) # u_center->z, v_center->x
-        Aff_sat2real = meter_per_pixel * R  # shape = [2,2]
-
-        # Trans matrix from sat to realword
-        XZ = torch.einsum('ij, hwj -> hwi', Aff_sat2real,
-                          uv_center)  # shape = [satmap_sidelength, satmap_sidelength, 2]
-
-        Y = torch.zeros_like(XZ[..., 0:1])
-        ones = torch.ones_like(Y)
-        sat2realwap = torch.cat([XZ[:, :, :1], Y, XZ[:, :, 1:], ones], dim=-1)  # [sidelength,sidelength,4]
-
-        return sat2realwap
+        return self.gaussians
 
     def World2GrdImgPixCoordinates(self, ori_shift_u, ori_shift_v, ori_heading, XYZ_1, ori_camera_k, grd_H, grd_W, ori_grdH,
                              ori_grdW):
@@ -448,60 +180,37 @@ class Model(nn.Module):
         return uv, mask
         # return uv1
 
-    def project_grd_to_map(self, grd_f, grd_c, shift_u, shift_v, heading, camera_k, satmap_sidelength, ori_grdH,
-                           ori_grdW, require_jac=True):
-        # inputs:
-        #   grd_f: ground features: B,C,H,W
-        #   shift: B, S, 2
-        #   heading: heading angle: B,S
-        #   camera_k: 3*3 K matrix of left color camera : B*3*3
-        # return:
-        #   grd_f_trans: B,S,E,C,satmap_sidelength,satmap_sidelength
+    def sat2world(self, satmap_sidelength):
+        # satellite: u:east , v:south from bottomleft and u_center: east; v_center: north from center
+        # realword: X: south, Y:down, Z: east   origin is set to the ground plane
 
-        B, C, H, W = grd_f.size()
+        # meshgrid the sat pannel
+        i = j = torch.arange(0, satmap_sidelength).cuda()  # to(self.device)
+        ii, jj = torch.meshgrid(i, j)  # i:h,j:w
 
-        XYZ_1 = self.sat2world(satmap_sidelength)  # [ sidelength,sidelength,4]
+        # uv is coordinate from top/left, v: south, u:east
+        uv = torch.stack([jj, ii], dim=-1).float()  # shape = [satmap_sidelength, satmap_sidelength, 2]
 
-        if self.args.proj == 'geo' or self.args.proj == 'CrossAttn':
-            uv, mask = self.World2GrdImgPixCoordinates(shift_u, shift_v, heading, XYZ_1, camera_k, H, W, ori_grdH, ori_grdW)  # [B, S, E, H, W,2]
-            # [B, H, W, 2], [B, H, W, 1]
+        # sat map from top/left to center coordinate
+        u0 = v0 = satmap_sidelength // 2
+        uv_center = uv - torch.tensor(
+            [u0, v0]).cuda()  # .to(self.device) # shape = [satmap_sidelength, satmap_sidelength, 2]
 
-        grd_f_trans, new_jac = grid_sample(grd_f, uv, None)
-        # [B,C,sidelength,sidelength], [3, B, C, sidelength, sidelength]
-        grd_f_trans = grd_f_trans * mask[:, None, :, :, 0]
-        if grd_c is not None:
-            grd_c_trans, _ = grid_sample(grd_c, uv)
-            grd_c_trans = grd_c_trans * mask[:, None, :, :, 0]
-        else:
-            grd_c_trans = None
-
-
-        return grd_f_trans, grd_c_trans, uv, mask
-
-    def inplane_uv(self, ori_shift_u, ori_shift_v, ori_heading, satmap_sidelength):
+        # affine matrix: scale*R
         meter_per_pixel = utils.get_meter_per_pixel()
         meter_per_pixel *= utils.get_process_satmap_sidelength() / satmap_sidelength
+        R = torch.tensor([[0, 1], [1, 0]]).float().cuda()  # to(self.device) # u_center->z, v_center->x
+        Aff_sat2real = meter_per_pixel * R  # shape = [2,2]
 
-        B = ori_heading.shape[0]
-        shift_u_pixels = self.args.shift_range_lon * ori_shift_u / meter_per_pixel
-        shift_v_pixels = self.args.shift_range_lat * ori_shift_v / meter_per_pixel
-        T = torch.cat([-shift_u_pixels, shift_v_pixels], dim=-1)  # [B, 2]
+        # Trans matrix from sat to realword
+        XZ = torch.einsum('ij, hwj -> hwi', Aff_sat2real,
+                          uv_center)  # shape = [satmap_sidelength, satmap_sidelength, 2]
 
-        heading = ori_heading * self.args.rotation_range / 180 * np.pi
-        cos = torch.cos(heading)
-        sin = torch.sin(heading)
-        R = torch.cat([cos, -sin, sin, cos], dim=-1).view(B, 2, 2)
+        Y = torch.zeros_like(XZ[..., 0:1])
+        ones = torch.ones_like(Y)
+        sat2realwap = torch.cat([XZ[:, :, :1], Y, XZ[:, :, 1:], ones], dim=-1)  # [sidelength,sidelength,4]
 
-        i = j = torch.arange(0, satmap_sidelength).cuda()  # to(self.device)
-        v, u = torch.meshgrid(i, j)  # i:h,j:w
-        uv_2 = torch.stack([u, v], dim=-1).unsqueeze(dim=0).repeat(B, 1, 1, 1).float()  # [B, H, W, 2]
-        uv_2 = uv_2 - satmap_sidelength / 2
-
-        uv_1 = torch.einsum('bij, bhwj->bhwi', R, uv_2)
-        uv_0 = uv_1 + T[:, None, None, :]  # [B, H, W, 2]
-
-        uv = uv_0 + satmap_sidelength / 2
-        return uv
+        return sat2realwap
 
     def Trans_update(self, shift_u, shift_v, heading, grd_feat_proj, sat_feat, level):
         B = shift_u.shape[0]
@@ -532,226 +241,30 @@ class Model(nn.Module):
 
         return shift_u_new, shift_v_new, heading_new
 
-    def corr(self, sat_map, grd_img_left, left_camera_k, gt_shift_u=None, gt_shift_v=None, gt_heading=None,
-             mode='train', file_name=None, gt_depth=None):
-        '''
-        Args:
-            sat_map: [B, C, A, A] A--> sidelength
-            left_camera_k: [B, 3, 3]
-            grd_img_left: [B, C, H, W]
-            gt_shift_u: [B, 1] u->longitudinal
-            gt_shift_v: [B, 1] v->lateral
-            gt_heading: [B, 1] east as 0-degree
-            mode:
-            file_name:
+    def inplane_uv(self, ori_shift_u, ori_shift_v, ori_heading, satmap_sidelength):
+        meter_per_pixel = utils.get_meter_per_pixel()
+        meter_per_pixel *= utils.get_process_satmap_sidelength() / satmap_sidelength
 
-        Returns:
+        B = ori_heading.shape[0]
+        shift_u_pixels = self.args.shift_range_lon * ori_shift_u / meter_per_pixel
+        shift_v_pixels = self.args.shift_range_lat * ori_shift_v / meter_per_pixel
+        T = torch.cat([-shift_u_pixels, shift_v_pixels], dim=-1)  # [B, 2]
 
-        '''
-        '''
-        :param sat_map: [B, C, A, A] A--> sidelength
-        :param left_camera_k: [B, 3, 3]
-        :param grd_img_left: [B, C, H, W]
-        :return:
-        '''
+        heading = ori_heading * self.args.rotation_range / 180 * np.pi
+        cos = torch.cos(heading)
+        sin = torch.sin(heading)
+        R = torch.cat([cos, -sin, sin, cos], dim=-1).view(B, 2, 2)
 
-        B, _, ori_grdH, ori_grdW = grd_img_left.shape
+        i = j = torch.arange(0, satmap_sidelength).cuda()  # to(self.device)
+        v, u = torch.meshgrid(i, j)  # i:h,j:w
+        uv_2 = torch.stack([u, v], dim=-1).unsqueeze(dim=0).repeat(B, 1, 1, 1).float()  # [B, H, W, 2]
+        uv_2 = uv_2 - satmap_sidelength / 2
 
-        sat_feat_list, sat_conf_list = self.SatFeatureNet(sat_map)
+        uv_1 = torch.einsum('bij, bhwj->bhwi', R, uv_2)
+        uv_0 = uv_1 + T[:, None, None, :]  # [B, H, W, 2]
 
-        grd_feat_list, grd_conf_list = self.GrdFeatureNet(grd_img_left)
-
-        shift_u = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
-        shift_v = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
-        # heading = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
-
-        corr_maps = []
-
-        for level in range(len(sat_feat_list)):
-            meter_per_pixel = self.meters_per_pixel[level]
-
-            sat_feat = sat_feat_list[level]
-            grd_feat = grd_feat_list[level]
-
-            A = sat_feat.shape[-1]
-            heading = gt_heading + np.random.uniform(- self.args.coe_heading_aug, self.args.coe_heading_aug)
-            grd_feat_proj, _, grd_uv, mask = self.project_grd_to_map(
-                grd_feat, None, shift_u, shift_v, heading, left_camera_k, A, ori_grdH, ori_grdW)
-
-            crop_H = int(A - self.args.shift_range_lat * 3 / meter_per_pixel)
-            crop_W = int(A - self.args.shift_range_lon * 3 / meter_per_pixel)
-            g2s_feat = TF.center_crop(grd_feat_proj, [crop_H, crop_W])
-            g2s_feat = F.normalize(g2s_feat.reshape(B, -1)).reshape(B, -1, crop_H, crop_W)
-
-            s_feat = sat_feat.reshape(1, -1, A, A)  # [B, C, H, W]->[1, B*C, H, W]
-            corr = F.conv2d(s_feat, g2s_feat, groups=B)[0]  # [B, H, W]
-
-            denominator = F.avg_pool2d(sat_feat.pow(2), (crop_H, crop_W), stride=1, divisor_override=1)  # [B, 4W]
-            denominator = torch.sum(denominator, dim=1)  # [B, H, W]
-            denominator = torch.maximum(torch.sqrt(denominator), torch.ones_like(denominator) * 1e-6)
-            corr = 2 - 2 * corr / denominator
-
-            B, corr_H, corr_W = corr.shape
-
-            corr_maps.append(corr)
-
-            max_index = torch.argmin(corr.reshape(B, -1), dim=1)
-            pred_u = (max_index % corr_W - corr_W / 2) * meter_per_pixel  # / self.args.shift_range_lon
-            pred_v = -(max_index // corr_W - corr_H / 2) * meter_per_pixel  # / self.args.shift_range_lat
-
-            cos = torch.cos(gt_heading[:, 0] * self.args.rotation_range / 180 * np.pi)
-            sin = torch.sin(gt_heading[:, 0] * self.args.rotation_range / 180 * np.pi)
-
-            pred_u1 = pred_u * cos + pred_v * sin
-            pred_v1 = - pred_u * sin + pred_v * cos
-
-            # corr0 = []
-            # for b in range(B):
-            #     corr0.append(F.conv2d(s_feat[b:b+1, :, :, :], g2s_feat[b:b+1, :, :, :]))  # [1, 1, H, W]
-            # corr0 = torch.cat(corr0, dim=1)
-            # print(torch.sum(torch.abs(corr0 - corr)))
-
-        if mode == 'train':
-            return self.triplet_loss(corr_maps, gt_shift_u, gt_shift_v, gt_heading)
-        else:
-            return pred_u1, pred_v1  # [B], [B]
-
-    def triplet_loss(self, corr_maps, gt_shift_u, gt_shift_v, gt_heading):
-        cos = torch.cos(gt_heading[:, 0] * self.args.rotation_range / 180 * np.pi)
-        sin = torch.sin(gt_heading[:, 0] * self.args.rotation_range / 180 * np.pi)
-
-        gt_delta_x = - gt_shift_u[:, 0] * self.args.shift_range_lon
-        gt_delta_y = - gt_shift_v[:, 0] * self.args.shift_range_lat
-
-        gt_delta_x_rot = - gt_delta_x * cos + gt_delta_y * sin
-        gt_delta_y_rot = gt_delta_x * sin + gt_delta_y * cos
-
-        losses = []
-        for level in range(len(corr_maps)):
-            meter_per_pixel = self.meters_per_pixel[level]
-
-            corr = corr_maps[level]
-            B, corr_H, corr_W = corr.shape
-
-            w = torch.round(corr_W / 2 - 0.5 + gt_delta_x_rot / meter_per_pixel)
-            h = torch.round(corr_H / 2 - 0.5 + gt_delta_y_rot / meter_per_pixel)
-
-            pos = corr[range(B), h.long(), w.long()]  # [B]
-            pos_neg = pos.reshape(-1, 1, 1) - corr  # [B, H, W]
-            loss = torch.sum(torch.log(1 + torch.exp(pos_neg * 10))) / (B * (corr_H * corr_W - 1))
-            # import pdb; pdb.set_trace()
-            losses.append(loss)
-
-        return torch.sum(torch.stack(losses, dim=0))
-
-    def weak_supervise_loss(self, corr_maps):
-        losses = []
-        for corr in corr_maps:
-            M, N, H, W = corr.shape
-            assert M == N
-            dis = torch.max(corr.reshape(M, N, -1), dim=-1)[0]
-            pos = torch.diagonal(dis) # [M]
-            pos_neg = pos.reshape(-1, 1) - dis
-            loss = torch.sum(torch.log(1 + torch.exp(pos_neg * 10))) / (M * (N-1))
-            losses.append(loss)
-
-        return torch.sum(torch.stack(losses, dim=0))
-
-    def CVattn_corr(self, sat_map, grd_img_left, left_camera_k, gt_shift_u=None, gt_shift_v=None, gt_heading=None,
-                    mode='train'):
-        '''
-        Args:
-            sat_map: [B, C, A, A] A--> sidelength
-            left_camera_k: [B, 3, 3]
-            grd_img_left: [B, C, H, W]
-            gt_shift_u: [B, 1] u->longitudinal
-            gt_shift_v: [B, 1] v->lateral
-            gt_heading: [B, 1] east as 0-degree
-            mode:
-            file_name:
-
-        Returns:
-
-        '''
-
-        B, _, ori_grdH, ori_grdW = grd_img_left.shape
-
-        sat_feat_list, sat_conf_list = self.SatFeatureNet(sat_map)
-        # if self.args.use_uncertainty:
-        #     sat_uncer_list = self.uncertain_net(sat_feat_list)
-        sat8, sat4, sat2 = sat_feat_list
-
-        grd8, grd4, grd2 = self.GrdEnc(grd_img_left)
-        # [H/8, W/8] [H/4, W/4] [H/2, W/2]
-        grd_feat_list = self.GrdDec(grd8, grd4, grd2)
-
-        shift_u = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
-        shift_v = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
-        heading = gt_heading
-
-        # heading = gt_heading + np.random.uniform(-0.1, 0.1)
-        grd2sat8, _, u, mask = self.project_grd_to_map(
-            grd_feat_list[0], None, shift_u, shift_v, heading, left_camera_k, sat8.shape[-1], ori_grdH, ori_grdW,
-            require_jac=False)
-        grd2sat4, _, _, _ = self.project_grd_to_map(
-            grd_feat_list[1], None, shift_u, shift_v, heading, left_camera_k, sat4.shape[-1], ori_grdH, ori_grdW,
-            require_jac=False)
-        grd2sat2, _, _, _ = self.project_grd_to_map(
-            grd_feat_list[2], None, shift_u, shift_v, heading, left_camera_k, sat2.shape[-1], ori_grdH, ori_grdW,
-            require_jac=False)
-
-        grd2sat8_attn = self.CVattn(grd2sat8, grd8, u, mask)
-        grd2sat4_attn = grd2sat4 + self.Dec4(grd2sat8_attn, grd2sat4)
-        grd2sat2_attn = grd2sat2 + self.Dec2(grd2sat4_attn, grd2sat2)
-
-        grd_feat_list = [grd2sat8_attn, grd2sat4_attn, grd2sat2_attn]
-
-        corr_maps = []
-
-        for level in range(len(sat_feat_list)):
-            meter_per_pixel = self.meters_per_pixel[level]
-
-            sat_feat = sat_feat_list[level]
-            grd_feat = grd_feat_list[level]
-
-            A = sat_feat.shape[-1]
-
-            crop_H = int(A - self.args.shift_range_lat * 3 / meter_per_pixel)
-            crop_W = int(A - self.args.shift_range_lon * 3 / meter_per_pixel)
-            g2s_feat = TF.center_crop(grd_feat, [crop_H, crop_W])
-            g2s_feat = F.normalize(g2s_feat.reshape(B, -1)).reshape(B, -1, crop_H, crop_W)
-
-            s_feat = sat_feat.reshape(1, -1, A, A)  # [B, C, H, W]->[1, B*C, H, W]
-            corr = F.conv2d(s_feat, g2s_feat, groups=B)[0]  # [B, H, W]
-
-            denominator = F.avg_pool2d(sat_feat.pow(2), (crop_H, crop_W), stride=1, divisor_override=1)  # [B, 4W]
-            # denominator = torch.sum(denominator, dim=1)  # [B, H, W]
-            # if self.args.use_uncertainty:
-            #     denominator = torch.sum(denominator, dim=1) * TF.center_crop(sat_uncer_list[level],
-            #                                                                  [corr.shape[1], corr.shape[2]])[:, 0]
-            # else:
-            denominator = torch.sum(denominator, dim=1)  # [B, H, W]
-            denominator = torch.maximum(torch.sqrt(denominator), torch.ones_like(denominator) * 1e-6)
-            corr = 2 - 2 * corr / denominator
-
-            B, corr_H, corr_W = corr.shape
-
-            corr_maps.append(corr)
-
-            max_index = torch.argmin(corr.reshape(B, -1), dim=1)
-            pred_u = (max_index % corr_W - corr_W / 2) * meter_per_pixel  # / self.args.shift_range_lon
-            pred_v = -(max_index // corr_W - corr_H / 2) * meter_per_pixel  # / self.args.shift_range_lat
-
-            cos = torch.cos(gt_heading[:, 0] * self.args.rotation_range / 180 * np.pi)
-            sin = torch.sin(gt_heading[:, 0] * self.args.rotation_range / 180 * np.pi)
-
-            pred_u1 = pred_u * cos + pred_v * sin
-            pred_v1 = - pred_u * sin + pred_v * cos
-
-        if mode == 'train':
-            return self.triplet_loss(corr_maps, gt_shift_u, gt_shift_v, gt_heading)
-        else:
-            return pred_u1, pred_v1  # [B], [B]
+        uv = uv_0 + satmap_sidelength / 2
+        return uv
 
     def NeuralOptimizer(self, grd_feat_dict, sat_feat_dict, B, left_camera_k=None, ori_grdH=None, ori_grdW=None):
 
@@ -775,7 +288,7 @@ class Model(nn.Module):
                     overhead_feat, _ = grid_sample(
                         grd_feat * self.masks[level].clone()[:, None, :, :].repeat(B, 1, 1, 1),
                         uv, jac=None)
-                elif self.args.stage == 2 or self.args.stage == 1 or self.args.stage == 3:
+                else:
                     uv = self.inplane_uv(shift_u, shift_v, heading, sat_feat.shape[-1])
                     overhead_feat, _ = grid_sample(
                         grd_feat * self.masks[level].clone()[:, None, :, :].repeat(B, 1, 1, 1),
@@ -840,7 +353,7 @@ class Model(nn.Module):
 
 
         B, _, ori_grdH, ori_grdW = grd_img_left.shape
-        self.grd_img_left = F.interpolate(grd_img_left, size=(128, 512), mode='bilinear', align_corners=False)
+        self.grd_img_left = F.interpolate(grd_img_left, size=(64, 256), mode='bilinear', align_corners=False)
         self.sat_map = F.interpolate(sat_map, size=(256, 256), mode='bilinear', align_corners=False)
 
         shift_u = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
@@ -882,27 +395,6 @@ class Model(nn.Module):
 
             return sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, self.masks, shift_lats, shift_lons, thetas, None
 
-        elif self.args.stage == 2:
-
-            self.grd_img_left = F.interpolate(grd_img_left, size=(64, 256), mode='bilinear', align_corners=False)
-
-            level = self.level[0]
-            with torch.no_grad():
-
-                grd_feat_dict_forT, grd_conf_dict_forT = self.FeatureForT(grd_img_left)
-            decoder_grd = self.grd_feat_projection(grd_img_left, grd_feat_dict_forT[level], grd_depth, left_camera_k)
-            grd2sat_gaussian_color, _ = render_projections(self.gaussians, (512,512), extra_label='prob')
-            test_img = to_pil_image(grd2sat_gaussian_color[0].clip(min=0, max=1))
-            test_img.save(f'sat_weak_maskfov2.png')
-            test_img = to_pil_image(decoder_grd.color[0].clip(min=0, max=1))
-            test_img.save(f'grd_weak_maskfov2.png')            
-            with torch.no_grad():
-                sat_feat_dict, sat_conf_dict = self.SatFeatureNet(sat_map)
-                over_feat_dict, over_conf_dict = self.SatFeatureNet(grd2sat_gaussian_color)
-                shift_lats, shift_lons, thetas = self.NeuralOptimizer(over_feat_dict, sat_feat_dict, B)
-                
-                return None, None, decoder_grd, None, None, None, None, thetas, None
-        
         elif self.args.stage == 1:
             decoder_grd = self.grd_projection(grd_img_left, grd_depth, left_camera_k)
             grd_color = decoder_grd.color.clip(min=0, max=1) 
@@ -985,6 +477,38 @@ class Model(nn.Module):
                 g2s_conf_dict[level] = g2s_conf
 
             return sat_feat_dict_forT, sat_conf_dict_forT, g2s_feat_dict, g2s_conf_dict, mask_dict, shift_lats, shift_lons, thetas, render_loss
+
+        elif self.args.stage == 2:
+
+            level = self.level[0]
+            grd_feat_dict_forT, grd_conf_dict_forT = self.FeatureForT(grd_img_left)
+            self.grd_img_left = self.grd_img_left.unsqueeze(1)
+
+            grd_gaussian = self.grd_feat_projection(self.grd_img_left, grd_feat_dict_forT[level].unsqueeze(1), grd_depth, left_camera_k)
+            
+            decoder_grd = self.grd_decoder.forward(
+                grd_gaussian,     # Sample from variational Gaussians
+                self.extrinsics,
+                self.camera_k,
+                self.near,
+                self.far,
+                (256, 1024),
+            )
+
+            grd2sat_gaussian_color, _ = render_projections(grd_gaussian, (512,512))
+            test_img = to_pil_image(grd2sat_gaussian_color[0].clip(min=0, max=1))
+            test_img.save(f'sat_weak_maskfov2.png')
+            test_img = to_pil_image(decoder_grd.color[0,0].clip(min=0, max=1))
+            test_img.save(f'grd_weak_maskfov2.png')            
+            with torch.no_grad():
+                if self.args.rotation_range > 0:
+                    sat_feat_dict, sat_conf_dict = self.SatFeatureNet(sat_map)
+                    over_feat_dict, over_conf_dict = self.SatFeatureNet(grd2sat_gaussian_color)
+                    shift_lats, shift_lons, thetas = self.NeuralOptimizer(over_feat_dict, sat_feat_dict, B)
+                else:
+                    thetas = torch.zeros([B, 1, 1], dtype=torch.float32, requires_grad=False, device=sat_map.device)
+            
+            return None, None, decoder_grd, None, None, None, None, thetas, None
         
 
         elif self.args.stage == 3:
@@ -1050,9 +574,6 @@ class Model(nn.Module):
             mask_dict = {}
             sat_feat = sat_feat_dict_forT[level]
             satmap_sidelength = sat_feat.shape[-1]
-            # XYZ_1 = self.sat2world(satmap_sidelength)                
-            # uv, mask = self.World2GrdImgPixCoordinates(shift_u, shift_v, heading, XYZ_1, left_camera_k, ori_grdH, ori_grdW,
-            #                                                 ori_grdH, ori_grdW)
             
             mask = (grd2sat_gaussian_feat2 != 0).any(dim=1, keepdim=True).permute(0, 2, 3, 1)
             
@@ -1082,7 +603,8 @@ class Model(nn.Module):
         elif self.args.stage == 4:
             # sat_feat_dict = {}
             # sat_conf_dict = {}
-            self.grd_img_left = F.interpolate(grd_img_left, size=(64, 256), mode='bilinear', align_corners=False)
+            self.grd_img_left = F.interpolate(grd_img_left, size=(128, 512), mode='bilinear', align_corners=False)
+            
             level = self.level[0]
             if self.args.share:
                 sat_feat_dict_forT, sat_conf_dict_forT = self.FeatureForT(sat_map)
@@ -1099,35 +621,35 @@ class Model(nn.Module):
             decoder_grd = self.grd_feat_projection(self.grd_img_left, grd_feat_dict_forT[level], grd_depth, left_camera_k)
             grd_color = decoder_grd.color
             test_img = to_pil_image(grd_color[0])
-            test_img.save(f'grd_weak_maskfov3.png')
-            # _, _, H, W = grd_color.shape
-            # grd_depth_imgs = F.interpolate(grd_depth.unsqueeze(1), (H, W), mode='bilinear', align_corners=True).squeeze(1)
-            # grd_left_imgs = F.interpolate(grd_img_left, (H, W), mode='bilinear', align_corners=True)
-            # depth_l1_loss = F.l1_loss(decoder_grd.depth, grd_depth_imgs, reduction='mean')
-            # rgb_mse_loss = F.mse_loss(decoder_grd.color, grd_left_imgs, reduction='mean')
-            # lpips_loss = self.lpips.forward(grd_color, grd_left_imgs, normalize=True).mean()
-            render_loss = torch.tensor(0.0).to(grd_color.device)
+            test_img.save(f'grd_weak_maskfov4.png')
+            _, _, H, W = grd_color.shape
+            grd_depth_imgs = F.interpolate(grd_depth.unsqueeze(1), (H, W), mode='bilinear', align_corners=True).squeeze(1)
+            grd_left_imgs = F.interpolate(grd_img_left, (H, W), mode='bilinear', align_corners=True)
+            depth_l1_loss = F.l1_loss(decoder_grd.depth, grd_depth_imgs, reduction='mean')
+            rgb_mse_loss = F.mse_loss(decoder_grd.color, grd_left_imgs, reduction='mean')
+            lpips_loss = self.lpips.forward(grd_color, grd_left_imgs, normalize=True).mean()
+            render_loss = depth_l1_loss + rgb_mse_loss * 20 + lpips_loss
             # ----------------- Rotation Stage ---------------------------
             with torch.no_grad():
-                grd2sat_gaussian_color1, grd2sat_gaussian_feat1 = render_projections(self.gaussians, (512,512), extra_label='prob')
-                
-                sat_feat_dict_forR, sat_uncer_dict_forR = self.SatFeatureNet(sat_map)
-                grd_feat_dict_forR, grd_conf_dict_forR = self.SatFeatureNet(grd2sat_gaussian_color1)
-
                 if self.args.rotation_range > 0:
+                    grd2sat_gaussian_color1, grd2sat_gaussian_feat1 = render_projections(self.gaussians, (512,512), extra_label='prob')
+                
+                    sat_feat_dict_forR, sat_uncer_dict_forR = self.SatFeatureNet(sat_map)
+                    grd_feat_dict_forR, grd_conf_dict_forR = self.SatFeatureNet(grd2sat_gaussian_color1)
                     shift_lats, shift_lons, thetas = self.NeuralOptimizer(grd_feat_dict_forR, sat_feat_dict_forR, B,
                                                                           left_camera_k, ori_grdH, ori_grdW)
                     heading = thetas[:, -1, -1:].detach()
                 else:
                     heading = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
+                    thetas = heading.unsqueeze(1)
                     shift_lats = None
                     shift_lons = None
 
             # ----------------- Translation Stage ---------------------------
 
-            grd2sat_gaussian_color2, grd2sat_gaussian_feat2 = render_projections(self.gaussians, (128,128), extra_label='prob', heading=heading)
+            grd2sat_gaussian_color2, grd2sat_gaussian_feat2 = render_projections(self.gaussians, (256,256), extra_label='prob', heading=heading)
             test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
-            test_img.save(f'sat_weak_maskfov3.png')
+            test_img.save(f'sat_weak_maskfov4.png')
             # single_features_to_RGB(grd2sat_gaussian_feat2)
             # grd_origin, _, _, _ = self.project_grd_to_map(
             #         grd_img_left, None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH,
@@ -1148,7 +670,7 @@ class Model(nn.Module):
             
             # mask = (grd2sat_gaussian_feat2 != 0).any(dim=1, keepdim=True).permute(0, 2, 3, 1)
             
-            g2s_feat_dict[level] = grd2sat_gaussian_feat2
+            g2s_feat_dict[level] = grd2sat_gaussian_feat2 * mask.permute(0, 3, 1, 2)
             g2s_conf_dict[level] = torch.ones_like(grd2sat_gaussian_feat2, device=grd2sat_gaussian_feat2.device) * mask.permute(0, 3, 1, 2)
             mask_dict[level] = mask
 

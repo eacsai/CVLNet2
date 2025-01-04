@@ -641,8 +641,11 @@ def train(net, args, save_path, name_path):
                 params = list(net.GrdFeatureForT.parameters()) + list(net.SatFeatureForT.parameters())
 
             optimizer = optim.Adam(params, lr=1e-4)
+        elif args.stage == 4:
+            params = list(net.FeatureForT.parameters()) + list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters())
+            optimizer = optim.Adam(params, lr=1e-4)
         elif args.stage == 2:
-            params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters())
+            params = net.gaussian_encoder.parameters()
             optimizer = optim.Adam(params, lr=1e-4)
 
         trainloader = load_train_data(args.batch_size, args.shift_range_lat, args.shift_range_lon, args.rotation_range,
@@ -695,11 +698,11 @@ def train(net, args, save_path, name_path):
 
             elif args.stage == 2:
                 global_step = global_step + args.batch_size
-                _, _, H, W = g2s_feat_dict.color.shape
+                _, _, _, H, W = g2s_feat_dict.color.shape
                 grd_depth = F.interpolate(grd_depth.unsqueeze(1), (H, W), mode='bilinear', align_corners=True).squeeze(1)
                 grd_left_imgs = F.interpolate(grd_left_imgs, (H, W), mode='bilinear', align_corners=True)
-                depth_l1_loss = F.l1_loss(g2s_feat_dict.depth, grd_depth, reduction='mean')
-                rgb_mse_loss = F.mse_loss(g2s_feat_dict.color, grd_left_imgs, reduction='mean')
+                depth_l1_loss = F.l1_loss(g2s_feat_dict.depth.squeeze(1), grd_depth, reduction='mean')
+                rgb_mse_loss = F.mse_loss(g2s_feat_dict.color.squeeze(1), grd_left_imgs, reduction='mean')
                 gt_theta = gt_heading[:, 0]
                 thetas_delta0 = torch.abs(thetas - gt_theta[:, None, None])  # [B, N_iters, level]
                 thetas_delta = torch.mean(thetas_delta0, dim=0)
@@ -707,7 +710,7 @@ def train(net, args, save_path, name_path):
                     lpips_loss = net.lpips.forward(g2s_feat_dict.color.clip(min=0, max=1), grd_left_imgs, normalize=True).mean()
                 else:
                     lpips_loss = torch.tensor(0, dtype=torch.float32, device=grd_left_imgs.device)
-                loss = depth_l1_loss + rgb_mse_loss * 20 + thetas_delta[-1, -1] * 10 + lpips_loss
+                loss = depth_l1_loss + rgb_mse_loss * 20 + lpips_loss
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -721,7 +724,7 @@ def train(net, args, save_path, name_path):
                     
                     time_start = time_end
 
-            elif args.stage == 1 or args.stage == 3:
+            elif args.stage == 1 or args.stage == 3 or args.stage == 4:
                 
                 corr_maps = batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, masks=mask_dict)
                 # corr_loss = weak_supervise_loss(corr_maps)
@@ -864,7 +867,7 @@ def train(net, args, save_path, name_path):
             if not os.path.exists(save_path):
                 os.makedirs(save_path)
 
-            torch.save(net.state_dict(), os.path.join(save_path, 'model_' + str(epoch) + '.pth'))
+            torch.save(net.state_dict(), os.path.join(name_path, 'model_' + str(epoch) + '.pth'))
         else:
             if not os.path.exists(name_path):
                 os.makedirs(name_path)
@@ -1024,6 +1027,15 @@ if __name__ == '__main__':
             print("load pretrained model from Stage0:")
             print(os.path.join(save_path.replace('Stage2', 'Stage0'),
                                'model_2.pth'))
+        
+        elif (args.stage == 4) and args.rotation_range > 0:
+            
+            net.load_state_dict(torch.load(
+                os.path.join(save_path.replace('Stage4', 'Stage0').replace(args.proj, 'geo').replace('Level2', "Level1"), 'model_2.pth')), strict=False)
+            print("load pretrained model from Stage0:")
+            print(os.path.join(save_path.replace('Stage4', 'Stage0'),
+                               'model_2.pth'))
+        
         if args.visualize:
             net.load_state_dict(torch.load(os.path.join(save_path, 'model_2.pth')), strict=False)
             print('------------------------')

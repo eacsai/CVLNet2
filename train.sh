@@ -21,7 +21,9 @@ python "./train_KITTI_weak.py" \
   --level 1 \
   --ConfGrd 0 \
   --contrastive_coe 1 \
-  --name 'test'
+  --name '64to256' \
+  --batch_size 24 \
+  --epochs 10
 
   python "./train_KITTI_weak.py" \
     --rotation_range 10 \
@@ -31,3 +33,18 @@ python "./train_KITTI_weak.py" \
     --ConfGrd 0 \
     --contrastive_coe 1 \
     --name 'fix_mask'
+
+python "./train_vigor_2DoF.py" \
+  --rotation_range 0 \
+  --area "same" \
+  --name '20face_160to160'
+
+python "./train_vigor_2DoF.py" \
+  --rotation_range 0 \
+  --area "same" \
+  --name '20face_80to160'
+
+python "./train_vigor_2DoF.py" \
+  --rotation_range 0 \
+  --area "same" \
+  --name '6face_160to160'

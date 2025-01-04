@@ -1,0 +1,273 @@
+import os
+
+os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import transforms
+from Vigor_dataset import load_vigor_data
+# from torch.utils.tensorboard import SummaryWriter
+import torch.nn.functional as F
+import scipy.io as scio
+
+import ssl
+
+ssl._create_default_https_context = ssl._create_unverified_context  # for downloading pretrained VGG weights
+
+from models_vigor import ModelVIGOR
+
+
+import numpy as np
+import os
+import argparse
+import time
+import matplotlib.pyplot as plt
+import cv2
+
+
+def test(net_test, args, save_path):
+    ### net evaluation state
+    net_test.eval()
+
+    # dataloader = load_vigor_data(args.batch_size, area=args.area)
+    dataloader = load_vigor_data(args.batch_size, area=args.area, rotation_range=args.rotation_range,
+                                 train=False, weak_supervise=args.Supervision=='Weakly')
+
+    pred_us = []
+    pred_vs = []
+
+    gt_us = []
+    gt_vs = []
+
+    start_time = time.time()
+    with torch.no_grad():
+
+        for i, Data in enumerate(dataloader, 0):
+
+            grd, sat, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
+
+            sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict = \
+                net(None, sat, grd, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage)
+
+            if i % 20 == 0:
+                print(i)
+
+    end_time = time.time()
+    duration = (end_time - start_time) / len(dataloader) / args.batch_size
+
+    pred_us = np.concatenate(pred_us, axis=0)
+    pred_vs = np.concatenate(pred_vs, axis=0)
+
+    gt_us = np.concatenate(gt_us, axis=0)
+    gt_vs = np.concatenate(gt_vs, axis=0)
+
+    scio.savemat(os.path.join(save_path, 'result.mat'), {'gt_us': gt_us, 'gt_vs': gt_vs,
+                                                         'pred_us': pred_us, 'pred_vs': pred_vs,
+                                                         })
+
+    distance = np.sqrt((pred_us - gt_us) ** 2 + (pred_vs - gt_vs) ** 2)  # [N]
+    init_dis = np.sqrt(gt_us ** 2 + gt_vs ** 2)
+
+
+    metrics = [1, 3, 5]
+    angles = [1, 3, 5]
+
+    f = open(os.path.join(save_path, 'results.txt'), 'a')
+    # f.write('====================================\n')
+    # f.write('       EPOCH: ' + str(epoch) + '\n')
+    # print('====================================')
+    # print('       EPOCH: ' + str(epoch))
+    line = 'Time per image (second): ' + str(duration) + '\n'
+    print(line)
+    f.write(line)
+
+    line = 'Distance average: (init, pred)' + str(np.mean(init_dis)) + ' ' + str(np.mean(distance))
+    print(line)
+    f.write(line + '\n')
+    line = 'Distance median: (init, pred)' + str(np.median(init_dis)) + ' ' + str(np.median(distance))
+    print(line)
+    f.write(line + '\n')
+
+
+    for idx in range(len(metrics)):
+        pred = np.sum(distance < metrics[idx]) / distance.shape[0] * 100
+        init = np.sum(init_dis < metrics[idx]) / init_dis.shape[0] * 100
+
+        line = 'distance within ' + str(metrics[idx]) + ' meters (init, pred): ' + str(init) + ' ' + str(pred)
+        print(line)
+        f.write(line + '\n')
+
+    print('====================================')
+    f.write('====================================\n')
+    f.close()
+    # result = np.mean(distance)
+
+    net_test.train()
+
+
+def val(dataloader, net, args):
+    time_start = time.time()
+
+    net.eval()
+    print('batch_size:', args.batch_size, '\n num of batches:', len(dataloader))
+
+    pred_us = []
+    pred_vs = []
+
+    gt_us = []
+    gt_vs = []
+
+    start_time = time.time()
+    with torch.no_grad():
+
+        for i, Data in enumerate(dataloader, 0):
+
+            grd, sat, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
+
+            sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict = \
+                net(None, sat, grd, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage)
+
+            if i % 20 == 0:
+                print(i)
+
+
+def train(net, args, save_path):
+    bestResult = 0.0
+
+    time_start = time.time()
+    for epoch in range(args.resume, args.epochs):
+        net.train()
+
+        trainloader, valloader = load_vigor_data(args.batch_size, area=args.area, rotation_range=args.rotation_range,
+                                                 train=True, weak_supervise=args.Supervision=='Weakly', amount=args.amount)
+
+        print('batch_size:', args.batch_size, '\n num of batches:', len(trainloader))
+
+        for Loop, (grd, save_path) in enumerate(trainloader, 0):
+
+            grd = grd.to(device)
+            net(grd, save_path)
+
+            if Loop % 10 == 9:  #
+                time_end = time.time()
+
+                print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
+                        ' Time: ' + str(time_end - time_start))
+
+                time_start = time_end
+
+        val(valloader, net, args)
+
+
+    print('Finished Training')
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--resume', type=int, default=0, help='resume the trained model')
+    parser.add_argument('--test', type=int, default=0, help='test with trained model')
+    parser.add_argument('--debug', type=int, default=0, help='debug to dump middle processing images')
+
+    parser.add_argument('--epochs', type=int, default=10, help='number of training epochs')
+
+    parser.add_argument('--rotation_range', type=float, default=0., help='degree')
+
+    parser.add_argument('--batch_size', type=int, default=10, help='batch size')
+
+    parser.add_argument('--level', type=str, default='0_2', help=' ')
+    parser.add_argument('--channels', type=str, default='64_16_4', help=' ')
+    parser.add_argument('--N_iters', type=int, default=1, help='any integer')
+
+    parser.add_argument('--Optimizer', type=str, default='TransV1', help='LM or SGD')
+    parser.add_argument('--proj', type=str, default='geo', help='geo, polar, nn, CrossAttn')
+    parser.add_argument('--use_uncertainty', type=int, default=0, help='0 or 1')
+
+    parser.add_argument('--area', type=str, default='same', help='same or cross')
+    parser.add_argument('--multi_gpu', type=int, default=0, help='0 or 1')
+
+    parser.add_argument('--ConfGrd', type=int, default=1, help='use confidence or not for grd image')
+    parser.add_argument('--ConfSat', type=int, default=0, help='use confidence or not for sat image')
+
+    parser.add_argument('--share', type=int, default=0, help='share feature extractor for grd and sat or not '
+                                                             'in translation estimation')
+
+    parser.add_argument('--GPS_error', type=int, default=5, help='')
+    parser.add_argument('--GPS_error_coe', type=float, default=0., help='')
+
+    parser.add_argument('--stage', type=int, default=3,
+                        help='fix to 3, this is for dataloader')
+    parser.add_argument('--task', type=str, default='2DoF',
+                        help='')
+
+    parser.add_argument('--Supervision', type=str, default='Gaussian',
+                        help='Weakly or Fully or Gaussian')
+
+    parser.add_argument('--visualize', type=int, default=0, help='0 or 1')
+
+    parser.add_argument('--sat', type=float, default=0., help='')
+    parser.add_argument('--grd', type=float, default=0., help='')
+    parser.add_argument('--sat_grd', type=float, default=1., help='')
+    parser.add_argument('--amount', type=float, default=1., help='')
+
+    args = parser.parse_args()
+
+    return args
+
+
+def getSavePath(args):
+    restore_path = './ModelsVIGOR/' + str(args.task) \
+                   + '/' + args.area + '_rot' + str(args.rotation_range) \
+                   + '_' + str(args.proj) \
+                   + '_Level' + args.level + '_Channels' + args.channels
+
+    save_path = restore_path
+
+    if args.ConfGrd:
+        save_path = save_path + '_ConfGrd'
+    if args.ConfSat:
+        save_path = save_path + '_ConfSat'
+
+
+    if args.GPS_error_coe > 0:
+        save_path = save_path + '_GPSerror' + str(args.GPS_error) + '_Coe' + str(args.GPS_error_coe)
+
+    if args.share:
+        save_path = save_path + '_Share'
+
+    save_path += '_' + args.Supervision
+
+    if args.amount < 1:
+        save_path = save_path + str(args.amount) + '%'
+
+    print('save_path:', save_path)
+
+    return save_path, restore_path
+
+
+if __name__ == '__main__':
+
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+
+    np.random.seed(2022)
+
+    args = parse_args()
+
+    save_path, restore_path = getSavePath(args)
+
+    net = ModelVIGOR(args, device)
+    if args.multi_gpu:
+        net = nn.DataParallel(net, dim=0)
+
+    net.to(device)
+
+    if args.test:
+        net.load_state_dict(torch.load(os.path.join(save_path, 'Model_best.pth')), strict=False)
+        current = test(net, args, save_path)
+    else:
+        train(net, args, save_path)
+

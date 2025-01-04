@@ -67,11 +67,11 @@ class GaussianAdapter(nn.Module):
         if grd_feat is not None:
             scales, rotations, color_sh \
                 = raw_gaussians.split((3, 4, 3 * self.d_color_sh), dim=-1)
-            features = rearrange(grd_feat, "batch channels height width -> batch (height width) channels").unsqueeze(-2)
+            features = rearrange(grd_feat, "batch view channels height width -> batch view (height width) channels").unsqueeze(-2)
         else:
-            scales, rotations, color_sh, features \
-                = raw_gaussians.split((3, 4, 3 * self.d_color_sh, self.n_feature_channels), dim=-1)
-            features = features
+            scales, rotations, color_sh \
+                = raw_gaussians.split((3, 4, 3 * self.d_color_sh), dim=-1)
+            features = torch.zeros(color_sh.shape[0], color_sh.shape[1], color_sh.shape[2], self.n_feature_channels, device=device).unsqueeze(-2)
         # Map scale features to valid scale range.
         scale_min = 0.5
         scale_max = 15.0
@@ -86,7 +86,6 @@ class GaussianAdapter(nn.Module):
 
         color_sh = rearrange(color_sh, "... (c d_sh) -> ... c d_sh", c=3)
         color_sh = color_sh.broadcast_to((*opacities.shape, 3, self.d_color_sh)) * self.color_sh_mask
-            
         features = features.broadcast_to((*opacities.shape, self.n_feature_channels))
 
         # Create world-space covariance matrices.
@@ -95,7 +94,7 @@ class GaussianAdapter(nn.Module):
         # covariances = c2w_rotations @ covariances @ c2w_rotations.transpose(-1, -2)
 
         # Compute Gaussian means.
-        origins, directions = get_world_rays(coordinates, extrinsics[:, None, None, :, :], intrinsics[:, None, None, :, :])
+        origins, directions = get_world_rays(coordinates, extrinsics[:, :, None, None, :, :], intrinsics[:, :, None, None, :, :])
         means = origins + directions * depths[..., None]
 
         return Gaussians(

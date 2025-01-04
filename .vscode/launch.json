@@ -9,7 +9,11 @@
           "args": [
               "--rotation_range", "10",
               "--stage", "0",
-              "--level", "1"
+              "--level", "1",
+              "--name", "change_channels_16to32",
+              "--batch_size", "2",
+              "--resume", "3",
+              "--epochs", "8"
           ],
           "console": "integratedTerminal"
       },
@@ -18,15 +22,16 @@
           "type": "debugpy",
           "request": "launch",
           "program": "${workspaceFolder}/train_KITTI_weak.py",
-          "justMyCode": false,  // 这里设置为 false
           "args": [
-              "--rotation_range", "10",
+              "--rotation_range", "20",
               "--stage", "2",
               "--share", "1",
               "--level", "1",
               "--ConfGrd", "0",
               "--contrastive_coe", "1",
-              "--name", "test",
+              "--name", "64to256",
+              "--batch_size", "24",
+              "--epochs", "8"
           ],
           "console": "integratedTerminal"
       },
@@ -43,6 +48,23 @@
             "--ConfGrd", "0",
             "--contrastive_coe", "1",
             "--name", "fix_mask_bev",
+        ],
+        "console": "integratedTerminal"
+      },
+      {
+        "name": "Train KITTI Stage 4 Share 1",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/train_KITTI_weak.py",
+        "args": [
+            "--rotation_range", "10",
+            "--stage", "4",
+            "--share", "1",
+            "--level", "2",
+            "--ConfGrd", "0",
+            "--contrastive_coe", "1",
+            "--name", "bev",
+            "--rotation_range", "0",
         ],
         "console": "integratedTerminal"
       },
@@ -91,6 +113,57 @@
               "--GPS_error_coe", "1"
           ],
           "console": "integratedTerminal"
-      }
+      },
+      {
+        "name": "Python train_vigor_2DoF",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${file}",
+        "console": "integratedTerminal",
+        "args": [
+            "--rotation_range", "0",
+            "--share", "0",
+            "--ConfGrd", "1",
+            "--level", "1",
+            "--Supervision", "Gaussian",
+            "--area", "same"
+        ],
+      },
+      {
+        "name": "Python train_vigor_2DoF_20face_160to160",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${file}",
+        "console": "integratedTerminal",
+        "args": [
+            "--rotation_range", "0",
+            "--area", "same",
+            "--name", "20face_160to160",
+        ],
+      },
+      {
+        "name": "Python train_vigor_2DoF_20face_80to160",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${file}",
+        "console": "integratedTerminal",
+        "args": [
+            "--rotation_range", "0",
+            "--area", "same",
+            "--name", "20face_80to160",
+        ],
+      },
+      {
+        "name": "Python train_vigor_2DoF_6face_160to16",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${file}",
+        "console": "integratedTerminal",
+        "args": [
+            "--rotation_range", "0",
+            "--area", "same",
+            "--name", "6face_160to160",
+        ],
+      },
   ]
 }

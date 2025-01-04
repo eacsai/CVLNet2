@@ -8,3 +8,4 @@ pretrained/
 ModelsGaussian/
 latent-gaussian-rasterization/
 diff-gaussian-rasterization-w-pose/
+depth_anything_v2/

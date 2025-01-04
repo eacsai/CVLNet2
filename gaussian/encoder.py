@@ -45,13 +45,13 @@ class GaussianEncoder(nn.Module):
                 84,
             ),
         )
-        self.to_gaussians_feat = nn.Sequential(
-            nn.ReLU(),
-            nn.Linear(
-                128,
-                148,
-            ),
-        )
+        # self.to_gaussians_feat = nn.Sequential(
+        #     nn.ReLU(),
+        #     nn.Linear(
+        #         128,
+        #         148,
+        #     ),
+        # )
         # High resolution skip only required in case of now downscaling
         self.high_resolution_skip = nn.Sequential(
             nn.Conv2d(3, 128, 7, 1, 3),
@@ -68,32 +68,30 @@ class GaussianEncoder(nn.Module):
 
     def forward(
         self,
-        img: Float[Tensor, "batch channels height width"],
-        grd_feat: Union[Float[Tensor, "batch channels height width"] | None],
-        camera_k: Float[Tensor, "batch 3 3"],
-        extrinsics: Float[Tensor, "batch 4 4"],
-        global_step: int,
-        near: Float[Tensor, "batch"],
-        far: Float[Tensor, "batch"],
+        img: Float[Tensor, "batch view channels height width"],
+        grd_feat: Union[Float[Tensor, "batch view channels height width"] | None],
+        camera_k: Float[Tensor, "batch view 3 3"],
+        extrinsics: Float[Tensor, "batch view 4 4"],
+        near: Float[Tensor, "batch view"],
+        far: Float[Tensor, "batch view"],
         deterministic: bool = False,
-        visualization_dump: Optional[dict] = None,
-        variational: bool = True,
     ) -> Gaussians:
-        b = img.shape[:1]
+        b, v, _, h, w = img.shape
         features = self.backbone(img)
         device = features.device
         h, w = features.shape[-2:]
-        features = rearrange(features, "b c h w -> b h w c").contiguous()
+        features = rearrange(features, "b v c h w -> b v h w c").contiguous()
         features = self.backbone_projection(features)
-        features = rearrange(features, "b h w c -> b c h w").contiguous()
+        features = rearrange(features, "b v h w c -> b v c h w").contiguous()
 
         if self.high_resolution_skip is not None:
             # Add the high-resolution skip connection.
-            skip = self.high_resolution_skip(img)
-            features = features + skip
+            skip = rearrange(img, "b v c h w -> (b v) c h w")
+            skip = self.high_resolution_skip(skip)
+            features = features + rearrange(skip, "(b v) c h w -> b v c h w", b=b, v=v)
 
         # Sample depths from the resulting features.
-        features = rearrange(features, "b c h w -> b (h w) c")
+        features = rearrange(features, "b v c h w -> b v (h w) c")
         depths, densities = self.depth_predictor.forward(
             features,
             near,
@@ -105,11 +103,7 @@ class GaussianEncoder(nn.Module):
         # Convert the features and depths into Gaussians.
         xy_ray, _ = sample_image_grid((h, w), device)
         xy_ray = rearrange(xy_ray, "h w xy -> (h w) () xy")
-        if grd_feat is not None:
-            gaussians = self.to_gaussians(features).unsqueeze(-2)
-        else:
-            gaussians = self.to_gaussians_feat(features).unsqueeze(-2)
-        
+        gaussians = self.to_gaussians(features).unsqueeze(-2)
         offset_xy = gaussians[..., :2].sigmoid()
         pixel_size = 1 / torch.tensor((w, h), dtype=torch.float32, device=device)
         xy_ray = xy_ray + (offset_xy - 0.5) * pixel_size
@@ -147,23 +141,23 @@ class GaussianEncoder(nn.Module):
         return Gaussians(
             rearrange(
                 gaussians.means,
-                "b r spp xyz -> b (r spp) xyz",
+                "b v r spp xyz -> b (v r spp) xyz",
             ),
             rearrange(
                 gaussians.covariances,
-                "b r spp i j -> b (r spp) i j",
+                "b v r spp i j -> b (v r spp) i j",
             ),
             rearrange(
                 gaussians.opacities,
-                "b r spp -> b (r spp)",
+                "b v r spp -> b (v r spp)",
             ),
             rearrange(
                 gaussians.color_harmonics,
-                "b r spp c d_c_sh -> b (r spp) c d_c_sh",
+                "b v r spp c d_c_sh -> b (v r spp) c d_c_sh",
             ),
             rearrange(
                 gaussians.features,
-                "b r spp c -> b (r spp) c",
+                "b v r spp c -> b (v r spp) c",
             )
         )
 

@@ -239,9 +239,8 @@ def render_projections(
     gaussians: Gaussians,
     resolution: tuple[int, int],
     margin: float = 0.1,
-    draw_label: bool = True,
-    extra_label: str = "",
     heading: Union[Tensor, None] = None,
+    look_axis = 1
 ) -> Float[Tensor, "batch 3 3 height width"]:
     device = gaussians.means.device
     B, _, _ = gaussians.means.shape
@@ -257,9 +256,9 @@ def render_projections(
             minima, maxima, margin=margin / 2
         )
 
-        look = ["x", "y", "z"]
+        # look = ["x", "y", "z"]
         # for look_axis in range(3):
-        look_axis = 1
+        # look_axis = 0
         right_axis = (look_axis + 1) % 3
         down_axis = (look_axis + 2) % 3
 
@@ -293,10 +292,10 @@ def render_projections(
         extents = scene_maxima - scene_minima
         far = extents[:, look_axis]
         near = torch.zeros_like(far)
-        # width = extents[:, right_axis]
-        # height = extents[:, down_axis]
-        width = 101.0 / 2
-        height = 101.0 / 2
+        width = extents[:, right_axis]
+        height = extents[:, down_axis]
+        # width = 101.0 / 2
+        # height = 101.0 / 2
         # extrinsics[:, right_axis, 3] = 0
         # extrinsics[:, down_axis, 3] = 0
 
