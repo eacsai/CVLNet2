@@ -30,18 +30,18 @@ from gaussian.decoder import GrdDecoder
 from gaussian.local_loss import LocalLoss
 import data_utils
 from VGG import VGGUnet, L2_norm, Encoder, Decoder
-from models.gaussian_feature_extractor import GSDownSample, GSUpSample
+from gaussian.gaussian_feature_extractor import GSDownSample, GSUpSample
 
 
 to_pil_image = transforms.ToPILImage()
 # original_raw_Lpips_step = 50000
 raw_Lpips_step = 25000
 # original_L1_step = 100000
-L1_step = 40000
+L1_step = 0
 # original_refine_Lpips_step = 100000
-refine_Lpips_step = 40000
+refine_Lpips_step = 0
 # original_discriminator_loss_active_step = 125000
-discriminator_loss_active_step = 60000
+discriminator_loss_active_step = 15000
 
 
 def print_grad(grad):
@@ -59,7 +59,7 @@ def get_integer(f: Fraction) -> int:
     return f.numerator
 
 class Model(nn.Module):
-    def __init__(self, args, device, mode = 'local'):  # device='cuda:0',
+    def __init__(self, args, device, mode = 'gaussian'):  # device='cuda:0',
         super(Model, self).__init__()
         self.device = device
         self.args = args
@@ -108,12 +108,12 @@ class Model(nn.Module):
             }
         ])
 
-        # self.generator_scheduler = torch.optim.lr_scheduler.LinearLR(
-        #     self.generator_optimizer,
-        #     start_factor=1 / args.warm_up_steps,
-        #     end_factor=1.0,
-        #     total_iters=args.warm_up_steps,
-        # )
+        self.generator_scheduler = torch.optim.lr_scheduler.LinearLR(
+            self.generator_optimizer,
+            start_factor=1 / args.warm_up_steps,
+            end_factor=1.0,
+            total_iters=args.warm_up_steps,
+        )
 
         self.discriminator_optimizer = optim.Adam(
             params= self.discriminator.parameters(),  # 参数组
@@ -134,19 +134,17 @@ class Model(nn.Module):
             end_factor=1.0,
             total_iters=args.warm_up_steps,
         )
-        # self.global_step = 0
+
+        self.global_step = 0
         if mode=='gaussian':
-            self.global_step = 0
             self.save_model_names = self.load_model_names = ['gaussian_encoder', 'grd_decoder']
         elif mode=='local':
-            self.global_step = L1_step
-            self.load_model_names = ['gaussian_encoder_loc', 'grd_decoder_loc', 'autoencoder', 'local_loss', 'sat_encoder', "grd_encoder", "discriminator"]
+            self.load_model_names = ['gaussian_encoder', 'grd_decoder']
             self.save_model_names = ['gaussian_encoder_loc', 'grd_decoder_loc', 'autoencoder', 'local_loss', 'sat_encoder', "grd_encoder", "discriminator"]
-            # self.load_networks('1')
+            self.load_networks('1')
         elif mode=="test":
-            self.global_step = L1_step
             self.load_model_names = ['gaussian_encoder_loc', 'grd_decoder_loc', 'autoencoder_loc', 'local_loss', 'sat_encoder', "grd_encoder", "discriminator"]
-            # self.load_networks('latest')
+            self.load_networks('latest')
     
     def grd_projection(self, grd_img_left, grd_depth, left_camera_k, deterministic=False) -> DecoderOutput:
         # initial
@@ -205,7 +203,7 @@ class Model(nn.Module):
         latent = out.feature_posterior.sample()
         z = self.rescale(latent, Fraction(1, self.supersampling_factor))
         skip_z = torch.cat((out.color, latent), dim=-3)
-        if self.mode == 'local' and self.global_step >= L1_step and use_generator:
+        if self.mode == 'local' and use_generator:
             dec = self.autoencoder.decode(z, skip_z)
         else:
             dec = None
@@ -213,7 +211,7 @@ class Model(nn.Module):
         # render_loss    
         rgb_mse_loss = F.mse_loss(out.color, self.grd_img_left, reduction='mean')
         depth_l1_loss = F.l1_loss(out.depth.unsqueeze(-1), self.grd_depth, reduction='mean')
-        if (self.mode == 'local' and self.global_step >= raw_Lpips_step):
+        if (self.mode == 'gaussian' and self.global_step >= raw_Lpips_step) or self.mode == 'local':
             raw_lpips_loss = self.lpips.forward(out.color, self.grd_img_left,  normalize=True)
         else:
             raw_lpips_loss = torch.tensor(0, dtype=torch.float32, device=out.color.device)
@@ -275,7 +273,7 @@ class Model(nn.Module):
             return self.loss
         
         elif self.mode == 'local':
-            # self.local_optimizer.zero_grad()
+            self.local_optimizer.zero_grad()
             self.generator_optimizer.zero_grad()
             self.set_requires_grad(self.discriminator, False)
             # train the grd generator
@@ -283,23 +281,21 @@ class Model(nn.Module):
             generator_loss = self.gaussian_generator(decoder_grd)
 
             # train the sat generator
-            # grd_feat = self.sat_prjection()
-            # sat_feat_list, sat_conf_list = self.sat_encoder(sat_map)
-            # sat_feat = sat_feat_list[-1]
-            # local_loss = self.local_loss(grd_feat, sat_feat, gt_shift_u, gt_shift_v, gt_heading, mode='train')
+            grd_feat = self.sat_prjection()
+            sat_feat_list, sat_conf_list = self.sat_encoder(sat_map)
+            sat_feat = sat_feat_list[-1]
+            local_loss = self.local_loss(grd_feat, sat_feat, gt_shift_u, gt_shift_v, gt_heading, mode='train')
             # total_loss = render_loss + local_loss
-            # total_loss = local_loss * 50 + generator_loss
-            total_loss = generator_loss
+            total_loss = local_loss * 50 + generator_loss
             total_loss.backward()
 
             # optimize the generator
             for param_group in self.generator_optimizer.param_groups:
                 torch.nn.utils.clip_grad_norm_(param_group['params'], max_norm=0.5)
             self.generator_optimizer.step()
-            # self.generator_scheduler.step()
             # optimize the local loss
-            # self.local_optimizer.step()
-            # self.local_scheduler.step()
+            self.local_optimizer.step()
+            self.local_scheduler.step()
             # train the discriminator
             discriminator_loss = 0
             if self.global_step >= discriminator_loss_active_step:
@@ -315,7 +311,7 @@ class Model(nn.Module):
                 # optimize the discriminator
                 self.discriminator_optimizer.step()
             self.global_step = self.global_step + sat_map.shape[0]
-            self.loss = generator_loss
+            self.loss = local_loss
             return self.loss
         
         elif self.mode == 'test':

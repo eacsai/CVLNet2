@@ -27,7 +27,7 @@ from gaussian.decoder import GrdDecoder
 from gaussian.local_loss import LocalLoss
 import data_utils
 from VGG import VGGUnet, L2_norm, Encoder, Decoder
-from models.gaussian_feature_extractor import GSDownSample, GSUpSample
+from gaussian.gaussian_feature_extractor import GSDownSample, GSUpSample
 from depth_anything_v2.dpt import DepthAnythingV2
 from models.pano_utils import *
 from models.six_split import split_panorama

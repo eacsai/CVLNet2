@@ -30,7 +30,7 @@ from gaussian.decoder import GrdDecoder
 from gaussian.local_loss import MutilLocalLoss
 import data_utils
 from VGG import VGGUnet, L2_norm, Encoder, Decoder
-from models.gaussian_feature_extractor import GSDownSample, GSUpSample
+from gaussian.gaussian_feature_extractor import GSDownSample, GSUpSample
 from visualize import sat_features_to_RGB, single_features_to_RGB
 import numpy as np
 

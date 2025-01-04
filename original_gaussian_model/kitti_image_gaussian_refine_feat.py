@@ -30,18 +30,18 @@ from gaussian.decoder import GrdDecoder
 from gaussian.local_loss import LocalLoss
 import data_utils
 from VGG import VGGUnet, L2_norm, Encoder, Decoder
-from models.gaussian_feature_extractor import GSDownSample, GSUpSample
+from gaussian.gaussian_feature_extractor import GSDownSample, GSUpSample
 
 
 to_pil_image = transforms.ToPILImage()
 # original_raw_Lpips_step = 50000
-raw_Lpips_step = 10000
+raw_Lpips_step = 20000
 # original_L1_step = 100000
-L1_step = 20000
+L1_step = 40000
 # original_refine_Lpips_step = 100000
-refine_Lpips_step = 20000
+refine_Lpips_step = 40000
 # original_discriminator_loss_active_step = 125000
-discriminator_loss_active_step = 30000
+discriminator_loss_active_step = 60000
 
 def print_grad(grad):
     print("Gradient shape:", grad.shape)
@@ -219,7 +219,7 @@ class Model(nn.Module):
             test_img = to_pil_image(dec[0].clip(min=0, max=1))
         else:
             test_img = to_pil_image(out.color[0].clip(min=0, max=1))
-        test_img.save('grd_refine_rgb.png')
+        test_img.save('grd_refine_feat.png')
         # test_img = to_pil_image(self.grd_img_left[0])
         # test_img.save('gt.png')
         return loss

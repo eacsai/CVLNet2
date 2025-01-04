@@ -20,22 +20,29 @@ from lpips import LPIPS
 
 from ply_export import export_ply
 from gaussian.build_gaussians import *
-from vis_gaussian import render_projections
+from vis_gaussian_feat import render_projections
 from loss.lpips import convert_to_buffer
 from gaussian.diagonal_gaussian_distribution import DiagonalGaussianDistribution
 from gaussian.autoencoder_kl import AutoencoderKL
 from gaussian.pix2pix import DiscriminatorPatchGan
-from gaussian.encoder import GaussianEncoder, VariationalGaussians
-from gaussian.decoder import GrdDecoder
-from gaussian.local_loss import MutilLocalLoss
+from gaussian.encoder_feat import GaussianEncoder, Gaussians
+from gaussian.decoder_feat import GrdDecoder
+from gaussian.local_loss import LocalLoss
 import data_utils
 from VGG import VGGUnet, L2_norm, Encoder, Decoder
-from models.gaussian_feature_extractor import GSDownSample, GSUpSample
-from visualize import sat_features_to_RGB, single_features_to_RGB
+from gaussian.gaussian_feature_extractor import GSDownSample, GSUpSample
 
 to_pil_image = transforms.ToPILImage()
 # original_raw_Lpips_step = 50000
-raw_Lpips_step = 20000
+raw_Lpips_step = 25000
+# original_L1_step = 100000
+L1_step = 50000
+# original_refine_Lpips_step = 100000
+refine_Lpips_step = 50000
+# original_discriminator_loss_active_step = 125000
+discriminator_loss_active_step = 65000
+
+sat_prjection_step = 100000
 
 def print_grad(grad):
     print("Gradient shape:", grad.shape)
@@ -58,8 +65,7 @@ class Model(nn.Module):
         self.args = args
         self.d_color_sh = 25
         self.d_feature_sh = 9
-        # self.global_step = 0
-        self.global_step = raw_Lpips_step * 2
+        self.global_step = 0
         self.n_feature_channels = 8
         self.variational = "gaussians"
         self.method = method
@@ -72,22 +78,21 @@ class Model(nn.Module):
             self.meters_per_pixel.append(meter_per_pixel * (2 ** (3 - level)))
             
         self.gaussian_encoder = GaussianEncoder()
+        self.feat_cnn = nn.Sequential(
+            nn.Conv2d(4, 64, kernel_size=3, padding=1, bias=False),
+        )
         self.grd_decoder = GrdDecoder()
         # self.sat_encoder = AutoencoderKL()
         self.sat_encoder = VGGUnet(self.level)
-        if method == "down":
-            self.grd_encoder = VGGUnet(self.level)
-            # self.grd_encoder = GSDownSample(self.level)
-        else:
-            self.grd_encoder = GSUpSample()
+        self.grd_encoder = VGGUnet(self.level)
         # self.grd_encoder = FeatureExtractor()
         self.discriminator = DiscriminatorPatchGan()
         self.autoencoder = AutoencoderKL()
         self.lpips = LPIPS(net="vgg")
-        self.local_loss = MutilLocalLoss(args.shift_range_lat, args.shift_range_lon, args.rotation_range)
+        self.local_loss = LocalLoss(args.shift_range_lat, args.shift_range_lon, args.rotation_range)
         convert_to_buffer(self.lpips, persistent=False)
 
-    def grd_projection(self, grd_img_left, grd_depth, left_camera_k, deterministic=False) -> DecoderOutput:
+    def grd_gaussian_render(self, grd_img_left, grd_depth, left_camera_k, deterministic=False) -> DecoderOutput:
         # initial
         self.camera_k = left_camera_k.clone()
         self.camera_k[:, :1, :] = self.camera_k[:, :1, :] / grd_depth.shape[2]  # original size input into feature get network/ output of feature get network
@@ -101,7 +106,7 @@ class Model(nn.Module):
         near = torch.ones(B).to(grd_img_left.device) * 0.5
         far = torch.ones(B).to(grd_img_left.device) * 160
         # Encode the context images.
-        self.gaussians: VariationalGaussians = self.gaussian_encoder(
+        self.gaussians: Gaussians = self.gaussian_encoder(
             self.grd_img_left, 
             self.camera_k, 
             self.extrinsics, 
@@ -111,62 +116,55 @@ class Model(nn.Module):
             deterministic,
             self.variational in ("gaussians", "none"),
         )
+        # grd_out
         decoder_out: DecoderOutput = self.grd_decoder.forward(
-            self.gaussians.sample() if self.variational in ("gaussians", "none") else gaussians.flatten(),     # Sample from variational Gaussians
+            self.gaussians,     # Sample from variational Gaussians
             self.extrinsics,
             self.camera_k,
             near,
             far,
             (128, 512),
             return_colors=True,
-            return_features=False,
+            return_features=True,
         )
         return decoder_out
 
-    def sat_prjection(self, mode="down"):
-        color, latent = render_projections(self.gaussians.sample(), (512,512), extra_label='prob')
-        projection_img = to_pil_image(color[0].clip(min=0, max=1))
-        projection_img.save(f"sat_{mode}.png")
-        nonzero_mask = color.abs().any(dim=1).float()
-        masks = {}
-        for level in range(4):
-            scale = Fraction(1, 2 ** (3 - level))
-            mask = self.rescale(nonzero_mask, scale)
-            masks[level] = mask
-        return color, masks
+    def sat_prjection(self):
+        color, latent = render_projections(self.gaussians, (512,512), extra_label='prob')
+        feature = self.feat_cnn(latent)
+        return feature, color
 
-
-    def forward(self, sat_map, grd_img_left, project_map, grd_depth, left_camera_k, gt_shift_u=None, gt_shift_v=None, gt_heading=None, mode='local'):
+    def forward(self, sat_map, grd_img_left, project_map, grd_depth, left_camera_k, gt_shift_u=None, gt_shift_v=None, gt_heading=None, mode='train', method='color'):
         # train the grd generator
-        decoder_grd = self.grd_projection(grd_img_left, grd_depth, left_camera_k)
+        decoder_grd = self.grd_gaussian_render(grd_img_left, grd_depth, left_camera_k)
+        # refine_grd = self.grd_projection()
         test_img = to_pil_image(decoder_grd.color[0].clip(min=0, max=1))
-        test_img.save(f'prob_{self.method}.png')
-        # test_img = to_pil_image(sat_map[0])
-        # test_img.save(f'origin_{self.method}.png')
+        
+        test_img.save(f'prob_test_{method}.png')
 
+        grd_gs_feat, grd_map = self.sat_prjection()
+        if method == 'feat':
+            grd_feat = grd_gs_feat
+        elif method == 'color':
+            grd_feat_list, grd_conf_list = self.grd_encoder(grd_map)
+            grd_feat = grd_feat_list[-1]
+        
+        sat_feat_list, sat_conf_list = self.sat_encoder(sat_map)
+        sat_feat = sat_feat_list[-1]
         if mode == 'train':
+            local_loss = self.local_loss(grd_feat, sat_feat, gt_shift_u, gt_shift_v, gt_heading, mode=mode)
             depth_l1_loss = F.l1_loss(decoder_grd.depth.unsqueeze(-1), self.grd_depth, reduction='mean')
             rgb_mse_loss = F.mse_loss(decoder_grd.color, self.grd_img_left, reduction='mean')
             if self.global_step >= raw_Lpips_step:
                 lpips_loss = self.lpips.forward(decoder_grd.color, self.grd_img_left, normalize=True).mean()
             else:
                 lpips_loss = torch.tensor(0, dtype=torch.float32, device=decoder_grd.color.device)
-            if self.global_step >= raw_Lpips_step*2:
-                grd_color, grd_mask = self.sat_prjection(self.method)
-                grd_feat_list, grd_conf_list = self.grd_encoder(grd_color)
-                sat_feat_list, sat_conf_list = self.sat_encoder(sat_map)
-                local_loss = self.local_loss(grd_feat_list, sat_feat_list, grd_mask, gt_shift_u, gt_shift_v, gt_heading, mode=mode)
-                self.local_loss_value = local_loss
-            else:
-                local_loss = torch.tensor(0, dtype=torch.float32, device=decoder_grd.color.device)
-                self.local_loss_value = rgb_mse_loss * 20 + depth_l1_loss + lpips_loss
+
             total_loss = rgb_mse_loss * 20 + depth_l1_loss + local_loss * 20 + lpips_loss
+            self.local_loss_value = local_loss
             return total_loss
         elif mode == 'test':
-            grd_color, grd_mask = self.sat_prjection(self.method)
-            grd_feat_list, grd_conf_list = self.grd_encoder(grd_color)
-            sat_feat_list, sat_conf_list = self.sat_encoder(sat_map)
-            pred_u1, pred_v1 = self.local_loss(grd_feat_list, sat_feat_list, grd_mask, gt_shift_u, gt_shift_v, gt_heading, mode=mode)
+            pred_u1, pred_v1 = self.local_loss(grd_feat, sat_feat, gt_shift_u, gt_shift_v, gt_heading, mode=mode)
             return pred_u1, pred_v1
 
     def rescale(
@@ -181,3 +179,11 @@ class Model(nn.Module):
     
     def get_scaled_size(self, scale: Fraction, size: Iterable[int]) -> Tuple[int, ...]:
         return tuple(get_integer(scale * s) for s in size)
+    
+    def set_requires_grad(self, nets, requires_grad=False):
+        if not isinstance(nets, list):
+            nets = [nets]
+        for net in nets:
+            if net is not None:
+                for param in net.parameters():
+                    param.requires_grad = requires_grad
