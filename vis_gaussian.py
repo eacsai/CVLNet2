@@ -292,10 +292,10 @@ def render_projections(
         extents = scene_maxima - scene_minima
         far = extents[:, look_axis]
         near = torch.zeros_like(far)
-        width = extents[:, right_axis]
-        height = extents[:, down_axis]
-        # width = 101.0 / 2
-        # height = 101.0 / 2
+        # width = extents[:, right_axis]
+        # height = extents[:, down_axis]
+        width = 101.0 / 2
+        height = 101.0 / 2
         # extrinsics[:, right_axis, 3] = 0
         # extrinsics[:, down_axis, 3] = 0
 

@@ -10,9 +10,8 @@
               "--rotation_range", "10",
               "--stage", "0",
               "--level", "1",
-              "--name", "change_channels_16to32",
-              "--batch_size", "2",
-              "--resume", "3",
+              "--name", "feat32",
+              "--batch_size", "12",
               "--epochs", "8"
           ],
           "console": "integratedTerminal"
@@ -23,15 +22,15 @@
           "request": "launch",
           "program": "${workspaceFolder}/train_KITTI_weak.py",
           "args": [
-              "--rotation_range", "20",
+              "--rotation_range", "10",
               "--stage", "2",
               "--share", "1",
               "--level", "1",
               "--ConfGrd", "0",
               "--contrastive_coe", "1",
-              "--name", "64to256",
-              "--batch_size", "24",
-              "--epochs", "8"
+              "--name", "feat32",
+              "--batch_size", "8",
+              "--epochs", "8",
           ],
           "console": "integratedTerminal"
       },
@@ -47,7 +46,8 @@
             "--level", "1",
             "--ConfGrd", "0",
             "--contrastive_coe", "1",
-            "--name", "fix_mask_bev",
+            "--name", "feat32_ori",
+            "--batch_size", "8",
         ],
         "console": "integratedTerminal"
       },
@@ -60,11 +60,12 @@
             "--rotation_range", "10",
             "--stage", "4",
             "--share", "1",
-            "--level", "2",
+            "--level", "1",
             "--ConfGrd", "0",
             "--contrastive_coe", "1",
-            "--name", "bev",
-            "--rotation_range", "0",
+            "--name", "feat32_ori_depth",
+            "--batch_size", "12",
+            "--epochs", "8",
         ],
         "console": "integratedTerminal"
       },

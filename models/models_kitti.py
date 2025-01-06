@@ -46,14 +46,13 @@ class Model(nn.Module):
         self.level = sorted([int(item) for item in args.level.split('_')])
         self.N_iters = args.N_iters
         self.channels = [int(item) for item in self.args.channels.split('_')]
-        self.gs_channels = [64, 32, 4]
+        self.gs_channels = [32, 16, 4]
 
         self.SatFeatureNet = VGGUnet(self.level, self.gs_channels)
-        self.gaussian_encoder = GaussianEncoder()
+        self.gaussian_encoder = GaussianEncoder(self.gs_channels[self.level[0] - 1])
         self.grd_decoder = GrdDecoder()
         self.lpips = LPIPS(net="vgg")
-        self.near = torch.ones(args.batch_size, 1).to(device) * 0.5
-        self.far = torch.ones(args.batch_size, 1).to(device) * 160
+
         # self.dino_feat = DinoFeat()
         convert_to_buffer(self.lpips, persistent=False)
 
@@ -73,7 +72,7 @@ class Model(nn.Module):
         for level in range(4):
             self.meters_per_pixel[level] = meter_per_pixel * (2 ** (3 - level))
 
-        self.TransRefine = TransOptimizerG2SP_V1(self.channels)
+        self.TransRefine = TransOptimizerG2SP_V1(self.gs_channels)
 
         self.coe_R = nn.Parameter(torch.tensor(-5., dtype=torch.float32), requires_grad=True)
         self.coe_T = nn.Parameter(torch.tensor(-3., dtype=torch.float32), requires_grad=True)
@@ -353,8 +352,11 @@ class Model(nn.Module):
 
 
         B, _, ori_grdH, ori_grdW = grd_img_left.shape
+        self.near = torch.ones(B, 1).to(grd_img_left.device) * 0.5
+        self.far = torch.ones(B, 1).to(grd_img_left.device) * 160
         self.grd_img_left = F.interpolate(grd_img_left, size=(64, 256), mode='bilinear', align_corners=False)
-        self.sat_map = F.interpolate(sat_map, size=(256, 256), mode='bilinear', align_corners=False)
+        # self.grd_img_left = F.interpolate(grd_img_left, size=(128, 512), mode='bilinear', align_corners=False)
+        self.sat_map = F.interpolate(sat_map, size=(128, 128), mode='bilinear', align_corners=False)
 
         shift_u = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
         shift_v = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
@@ -492,14 +494,14 @@ class Model(nn.Module):
                 self.camera_k,
                 self.near,
                 self.far,
-                (256, 1024),
+                (64, 256),
             )
 
             grd2sat_gaussian_color, _ = render_projections(grd_gaussian, (512,512))
             test_img = to_pil_image(grd2sat_gaussian_color[0].clip(min=0, max=1))
-            test_img.save(f'sat_weak_maskfov2.png')
+            test_img.save(f'sat_weak_ori_128.png')
             test_img = to_pil_image(decoder_grd.color[0,0].clip(min=0, max=1))
-            test_img.save(f'grd_weak_maskfov2.png')            
+            test_img.save(f'grd_weak_ori_128.png')            
             with torch.no_grad():
                 if self.args.rotation_range > 0:
                     sat_feat_dict, sat_conf_dict = self.SatFeatureNet(sat_map)
@@ -514,7 +516,6 @@ class Model(nn.Module):
         elif self.args.stage == 3:
             # sat_feat_dict = {}
             # sat_conf_dict = {}
-            self.grd_img_left = F.interpolate(grd_img_left, size=(64, 256), mode='bilinear', align_corners=False)
             level = self.level[0]
             if self.args.share:
                 sat_feat_dict_forT, sat_conf_dict_forT = self.FeatureForT(sat_map)
@@ -527,21 +528,26 @@ class Model(nn.Module):
             # grd_conf_dict_forT = torch.ones_like(grd_feat_dict_forT, device=grd_feat_dict_forT.device)
             # sat_feat_dict_forT = self.dino_feat(self.sat_map)
             # sat_conf_dict_forT = torch.ones_like(sat_feat_dict_forT, device=sat_feat_dict_forT.device)
+            self.grd_img_left = self.grd_img_left.unsqueeze(1)
+            grd_gaussian = self.grd_feat_projection(self.grd_img_left, grd_feat_dict_forT[level].unsqueeze(1), grd_depth, left_camera_k)
             
-            decoder_grd = self.grd_feat_projection(self.grd_img_left, grd_feat_dict_forT[level], grd_depth, left_camera_k)
-            grd_color = decoder_grd.color
-            test_img = to_pil_image(grd_color[0])
-            test_img.save(f'grd_weak_maskfov3_noshare.png')
-            # _, _, H, W = grd_color.shape
-            # grd_depth_imgs = F.interpolate(grd_depth.unsqueeze(1), (H, W), mode='bilinear', align_corners=True).squeeze(1)
-            # grd_left_imgs = F.interpolate(grd_img_left, (H, W), mode='bilinear', align_corners=True)
-            # depth_l1_loss = F.l1_loss(decoder_grd.depth, grd_depth_imgs, reduction='mean')
-            # rgb_mse_loss = F.mse_loss(decoder_grd.color, grd_left_imgs, reduction='mean')
-            # lpips_loss = self.lpips.forward(grd_color, grd_left_imgs, normalize=True).mean()
-            render_loss = torch.tensor(0.0).to(grd_color.device)
+            # decoder_grd = self.grd_decoder.forward(
+            #     grd_gaussian,     # Sample from variational Gaussians
+            #     self.extrinsics,
+            #     self.camera_k,
+            #     self.near,
+            #     self.far,
+            #     (256, 1024),
+            # )
+
+            # grd_color = decoder_grd.color
+            # test_img = to_pil_image(grd_color[0])
+            # test_img.save(f'grd_weak_maskfov3_share.png')
+
+            render_loss = torch.tensor(0.0).to(self.grd_img_left.device)
             # ----------------- Rotation Stage ---------------------------
             with torch.no_grad():
-                grd2sat_gaussian_color1, grd2sat_gaussian_feat1 = render_projections(self.gaussians, (512,512), extra_label='prob')
+                grd2sat_gaussian_color1, grd2sat_gaussian_feat1 = render_projections(grd_gaussian, (512,512))
                 
                 sat_feat_dict_forR, sat_uncer_dict_forR = self.SatFeatureNet(sat_map)
                 grd_feat_dict_forR, grd_conf_dict_forR = self.SatFeatureNet(grd2sat_gaussian_color1)
@@ -557,9 +563,9 @@ class Model(nn.Module):
 
             # ----------------- Translation Stage ---------------------------
 
-            grd2sat_gaussian_color2, grd2sat_gaussian_feat2 = render_projections(self.gaussians, (128,128), extra_label='prob', heading=heading)
+            grd2sat_gaussian_color2, grd2sat_gaussian_feat2 = render_projections(grd_gaussian, (128,128), heading=heading)
             test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
-            test_img.save(f'sat_weak_maskfov3_noshare.png')
+            test_img.save(f'sat_weak_maskfov3.png')
             # single_features_to_RGB(grd2sat_gaussian_feat2)
             # grd_origin, _, _, _ = self.project_grd_to_map(
             #         grd_img_left, None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH,
@@ -567,8 +573,7 @@ class Model(nn.Module):
             #         require_jac=False)
             # test_img = to_pil_image(grd_origin[0].clip(min=0, max=1))
             # test_img.save(f'grd_origin.png')
-
-            # test_img = to_pil_image(sat_map[0].clip(min=0, max=1))
+            # test_img = to_pil_image(self.sat_map[0].clip(min=0, max=1))
             # test_img.save(f'origin_sat.png')
 
             mask_dict = {}
@@ -602,37 +607,38 @@ class Model(nn.Module):
 
         elif self.args.stage == 4:
             # sat_feat_dict = {}
-            # sat_conf_dict = {}
-            self.grd_img_left = F.interpolate(grd_img_left, size=(128, 512), mode='bilinear', align_corners=False)
-            
+            # sat_conf_dict = {}            
             level = self.level[0]
-            if self.args.share:
+            with torch.no_grad():
                 sat_feat_dict_forT, sat_conf_dict_forT = self.FeatureForT(sat_map)
                 grd_feat_dict_forT, grd_conf_dict_forT = self.FeatureForT(grd_img_left)
-            else:
-                grd_feat_dict_forT, grd_conf_dict_forT = self.GrdFeatureForT(grd2sat_gaussian_color)
-                sat_feat_dict_forT, sat_conf_dict_forT = self.SatFeatureForT(sat_map)
             
-            # grd_feat_dict_forT = self.dino_feat(self.grd_img_left)
-            # grd_conf_dict_forT = torch.ones_like(grd_feat_dict_forT, device=grd_feat_dict_forT.device)
-            # sat_feat_dict_forT = self.dino_feat(self.sat_map)
-            # sat_conf_dict_forT = torch.ones_like(sat_feat_dict_forT, device=sat_feat_dict_forT.device)
-            
-            decoder_grd = self.grd_feat_projection(self.grd_img_left, grd_feat_dict_forT[level], grd_depth, left_camera_k)
-            grd_color = decoder_grd.color
+            self.grd_img_left = self.grd_img_left.unsqueeze(1)
+            grd_gaussian = self.grd_feat_projection(self.grd_img_left, grd_feat_dict_forT[level].unsqueeze(1), grd_depth, left_camera_k)
+            decoder_grd = self.grd_decoder.forward(
+                grd_gaussian,     # Sample from variational Gaussians
+                self.extrinsics,
+                self.camera_k,
+                self.near,
+                self.far,
+                (64, 256),
+            )
+            grd_color = decoder_grd.color.squeeze(1)
             test_img = to_pil_image(grd_color[0])
-            test_img.save(f'grd_weak_maskfov4.png')
-            _, _, H, W = grd_color.shape
-            grd_depth_imgs = F.interpolate(grd_depth.unsqueeze(1), (H, W), mode='bilinear', align_corners=True).squeeze(1)
-            grd_left_imgs = F.interpolate(grd_img_left, (H, W), mode='bilinear', align_corners=True)
-            depth_l1_loss = F.l1_loss(decoder_grd.depth, grd_depth_imgs, reduction='mean')
-            rgb_mse_loss = F.mse_loss(decoder_grd.color, grd_left_imgs, reduction='mean')
+            test_img.save(f'grd_weak_maskfov4_depth.png')
+
+            # grd_depth_imgs = F.interpolate(grd_depth.unsqueeze(1), (64, 256), mode='bilinear', align_corners=True)
+            grd_left_imgs = self.grd_img_left.squeeze(1)
+            # depth_l1_loss = F.l1_loss(decoder_grd.depth, grd_depth_imgs, reduction='mean')
+            rgb_mse_loss = F.mse_loss(grd_color, grd_left_imgs, reduction='mean')
             lpips_loss = self.lpips.forward(grd_color, grd_left_imgs, normalize=True).mean()
-            render_loss = depth_l1_loss + rgb_mse_loss * 20 + lpips_loss
+            render_loss = rgb_mse_loss * 20 + lpips_loss
+            # render_loss = depth_l1_loss * 0.01 + rgb_mse_loss + lpips_loss * 0.05
+            # render_loss = torch.tensor(0.0).to(self.grd_img_left.device)
             # ----------------- Rotation Stage ---------------------------
             with torch.no_grad():
                 if self.args.rotation_range > 0:
-                    grd2sat_gaussian_color1, grd2sat_gaussian_feat1 = render_projections(self.gaussians, (512,512), extra_label='prob')
+                    grd2sat_gaussian_color1, grd2sat_gaussian_feat1 = render_projections(grd_gaussian, (512,512))
                 
                     sat_feat_dict_forR, sat_uncer_dict_forR = self.SatFeatureNet(sat_map)
                     grd_feat_dict_forR, grd_conf_dict_forR = self.SatFeatureNet(grd2sat_gaussian_color1)
@@ -647,9 +653,9 @@ class Model(nn.Module):
 
             # ----------------- Translation Stage ---------------------------
 
-            grd2sat_gaussian_color2, grd2sat_gaussian_feat2 = render_projections(self.gaussians, (256,256), extra_label='prob', heading=heading)
+            grd2sat_gaussian_color2, grd2sat_gaussian_feat2 = render_projections(grd_gaussian, (128,128), heading=heading)
             test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
-            test_img.save(f'sat_weak_maskfov4.png')
+            test_img.save(f'sat_weak_maskfov4_depth.png')
             # single_features_to_RGB(grd2sat_gaussian_feat2)
             # grd_origin, _, _, _ = self.project_grd_to_map(
             #         grd_img_left, None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH,
@@ -664,13 +670,14 @@ class Model(nn.Module):
             mask_dict = {}
             sat_feat = sat_feat_dict_forT[level]
             satmap_sidelength = sat_feat.shape[-1]
-            XYZ_1 = self.sat2world(satmap_sidelength)                
-            uv, mask = self.World2GrdImgPixCoordinates(shift_u, shift_v, heading, XYZ_1, left_camera_k, ori_grdH, ori_grdW,
-                                                            ori_grdH, ori_grdW)
-            
+            # XYZ_1 = self.sat2world(satmap_sidelength)                
+            # uv, mask = self.World2GrdImgPixCoordinates(shift_u, shift_v, heading, XYZ_1, left_camera_k, ori_grdH, ori_grdW,
+            #                                                 ori_grdH, ori_grdW)
+                        
+            mask = (grd2sat_gaussian_feat2 != 0).any(dim=1, keepdim=True).permute(0, 2, 3, 1)
             # mask = (grd2sat_gaussian_feat2 != 0).any(dim=1, keepdim=True).permute(0, 2, 3, 1)
             
-            g2s_feat_dict[level] = grd2sat_gaussian_feat2 * mask.permute(0, 3, 1, 2)
+            g2s_feat_dict[level] = grd2sat_gaussian_feat2
             g2s_conf_dict[level] = torch.ones_like(grd2sat_gaussian_feat2, device=grd2sat_gaussian_feat2.device) * mask.permute(0, 3, 1, 2)
             mask_dict[level] = mask
 

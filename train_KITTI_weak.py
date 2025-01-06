@@ -1,7 +1,7 @@
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 import torch
 import torch.nn as nn
@@ -642,8 +642,15 @@ def train(net, args, save_path, name_path):
 
             optimizer = optim.Adam(params, lr=1e-4)
         elif args.stage == 4:
-            params = list(net.FeatureForT.parameters()) + list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters())
+            params = net.gaussian_encoder.parameters()
             optimizer = optim.Adam(params, lr=1e-4)
+            # scheduler = torch.optim.lr_scheduler.LinearLR(
+            #     optimizer,
+            #     1 / 2000,
+            #     1,
+            #     total_iters=2000,
+            # )
+
         elif args.stage == 2:
             params = net.gaussian_encoder.parameters()
             optimizer = optim.Adam(params, lr=1e-4)
@@ -707,7 +714,7 @@ def train(net, args, save_path, name_path):
                 thetas_delta0 = torch.abs(thetas - gt_theta[:, None, None])  # [B, N_iters, level]
                 thetas_delta = torch.mean(thetas_delta0, dim=0)
                 if global_step > 20000:
-                    lpips_loss = net.lpips.forward(g2s_feat_dict.color.clip(min=0, max=1), grd_left_imgs, normalize=True).mean()
+                    lpips_loss = net.lpips.forward(g2s_feat_dict.color.squeeze(1).clip(min=0, max=1), grd_left_imgs, normalize=True).mean()
                 else:
                     lpips_loss = torch.tensor(0, dtype=torch.float32, device=grd_left_imgs.device)
                 loss = depth_l1_loss + rgb_mse_loss * 20 + lpips_loss
@@ -724,124 +731,16 @@ def train(net, args, save_path, name_path):
                     
                     time_start = time_end
 
-            elif args.stage == 1 or args.stage == 3 or args.stage == 4:
+            elif args.stage == 1 or args.stage == 3:
                 
                 corr_maps = batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, masks=mask_dict)
-                # corr_loss = weak_supervise_loss(corr_maps)
-
-                if args.visualize:
-
-                    visualize_dir = os.path.join(save_path, 'visualization')
-                    if not os.path.exists(visualize_dir):
-                        os.makedirs(visualize_dir)
-
-                    level = max([int(item) for item in args.level.split('_')])
-                    corr = corr_maps[level]
-                    corr_H, corr_W = corr.shape[2:]
-
-                    cos = torch.cos(gt_heading[:, 0] * args.rotation_range / 180 * np.pi)
-                    sin = torch.sin(gt_heading[:, 0] * args.rotation_range / 180 * np.pi)
-                    gt_delta_x = - gt_shift_u[:, 0] * args.shift_range_lon
-                    gt_delta_y = - gt_shift_v[:, 0] * args.shift_range_lat
-                    gt_delta_x_rot = - gt_delta_x * cos + gt_delta_y * sin
-                    gt_delta_y_rot = gt_delta_x * sin + gt_delta_y * cos
-                    gt_u1 = (gt_delta_x_rot / net.meters_per_pixel[3]).data.cpu().numpy()
-                    gt_v1 = (gt_delta_y_rot / net.meters_per_pixel[3]).data.cpu().numpy()
-                    gt_angle = gt_heading[:, 0].data.cpu().numpy() * args.rotation_range / 180 * np.pi
-
-                    for g_idx in range(corr.shape[0]):
-                        for s_idx in range(corr.shape[1]):
-                            max_index = torch.argmin(corr[g_idx, s_idx].reshape(-1)).data.cpu().numpy()
-
-                            pred_u = (max_index % corr_W - corr_W / 2) * np.power(2, 3 - level)
-                            pred_v = (max_index // corr_W - corr_H / 2) * np.power(2, 3 - level)
-                            pred_angle = thetas[g_idx, -1, -1].data.cpu().numpy() * args.rotation_range / 180 * np.pi
-
-                            prob_map = cv2.resize(corr[g_idx, s_idx].data.cpu().numpy(), (corr.shape[3] * 2, corr.shape[2] * 2))#[25:285, 25:285]
-                            img = sat_map[s_idx].permute(1, 2, 0).data.cpu().numpy()[256-prob_map.shape[0]//2: -256+prob_map.shape[0]//2, 256-prob_map.shape[0]//2:-256+prob_map.shape[0]//2, :]
-
-                            overlay = show_cam_on_image(img, prob_map, False, cv2.COLORMAP_HSV)
-
-                            fig, ax = plt.subplots()
-                            shw = ax.imshow(overlay)
-
-                            norm = colors.Normalize(vmin=0, vmax=1)
-                            shw.set_norm(norm)
-                            shw.set_cmap('jet')
-                            divider = make_axes_locatable(ax)
-                            cax = divider.append_axes('right', size='5%', pad=0.05)
-                            fig.colorbar(shw, cax=cax, orientation='vertical')
-
-                            A = overlay.shape[0]
-                            # init = ax.scatter(A / 2, A / 2, color='r', linewidth=1, edgecolor="w", s=160, zorder=2)
-                            pred = ax.scatter(pred_u + A / 2, pred_v + A / 2, linewidth=1, edgecolor="w", color='r',
-                                              s=240, zorder=2)
-                            # , marker = "^"
-
-                            s = 1
-                            # ax.quiver(A / 2, A / 2, 1, 1, angles=0, color='r', zorder=2, scale_units='width', scale=15,
-                            #           width=0.015, headwidth=3, headlength=4, headaxislength=3.5)
-                            ax.quiver(pred_u + A / 2, pred_v + A / 2,
-                                      np.cos(pred_angle),
-                                      np.sin(pred_angle),
-                                      color='r', zorder=2, scale_units='width', scale=12,
-                                      width=0.015, headwidth=3, headlength=4, headaxislength=3.5)
-
-                            ax.axis('off')
-
-                            # import pdb; pdb.set_trace()
-
-                            if g_idx == s_idx:
-                                # cbar = plt.colorbar(shw, location='left', orientation='vertical', ticks=[overlay.min(), overlay.max()])
-                                # cbar.ax.set_yticklabels(['Low', 'High'])
-
-                                gt = ax.scatter(gt_u1[g_idx] + A / 2, gt_v1[g_idx] + A / 2, color='g', linewidth=1, edgecolor="w", marker="*",
-                                                s=400,
-                                                zorder=2)
-
-                                ax.legend([pred, gt], ['Pred', 'GT'], markerscale=1.2, frameon=False, fontsize=16,
-                                          edgecolor="black", labelcolor='black', shadow=True, facecolor='b', loc='upper center', bbox_to_anchor=(0.5, 1.14), ncols=2)  # , loc='upper right'
-                                ax.quiver(gt_u1[g_idx] + A / 2, gt_v1[g_idx] + A / 2,
-                                          np.cos(gt_angle)[g_idx],
-                                          np.sin(gt_angle)[g_idx],
-                                          color='g', zorder=2, scale_units='width', scale=13,
-                                      width=0.015, headwidth=3, headlength=4, headaxislength=3.5)
-
-
-
-                                plt.savefig(
-                                    os.path.join(visualize_dir, 'pos_' + str(Loop * args.batch_size + g_idx) + '_' + str(s_idx) + '.png'),
-                                    transparent=True, dpi=150, bbox_inches='tight', pad_inches=0) # , bbox_inches='tight'
-                                plt.close()
-
-                                break
-
-                            else:
-                                ax.legend([pred], ['Pred'], markerscale=1.2, frameon=False,
-                                          fontsize=16,
-                                          edgecolor="black", labelcolor='black', shadow=True, facecolor='b', loc='upper center', bbox_to_anchor=(0.5, 1.14))
-
-                                # plt.show()
-                                plt.savefig(
-                                    os.path.join(visualize_dir,
-                                                 'neg_' + str(Loop * args.batch_size + g_idx) + '_' + str(
-                                                     s_idx) + '.png'),
-                                    transparent=True, dpi=150, pad_inches=-0.1)  #, bbox_inches='tight'
-
-
-
-                                plt.close()
-                        print('done')
-
                 corr_loss, GPS_loss = Weakly_supervised_loss_w_GPS_error(corr_maps, gt_shift_u, gt_shift_v,
                                                                          gt_heading,
                                                                          args,
                                                                          net.meters_per_pixel,
                                                                          args.GPS_error)
-                # gt heading here just to compute the GPS position
 
-
-                loss = args.contrastive_coe * corr_loss * 20 + args.GPS_error_coe * GPS_loss + render_loss
+                loss = args.contrastive_coe * corr_loss + args.GPS_error_coe * GPS_loss + render_loss
 
                 R_err = torch.abs(thetas[:, -1, -1].reshape(-1) - gt_heading.reshape(-1)).mean() * args.rotation_range
 
@@ -850,7 +749,47 @@ def train(net, args, save_path, name_path):
                 loss.backward()
                 optimizer.step()
                 # optimizer2.step()
+                # 打印每个参数的梯度
+                # for name, param in net.named_parameters():
+                #     if param.grad is not None:
+                #         # 检查梯度张量中是否存在非零元素
+                #         if (param.grad != 0).any():
+                #             print(name)
+                if Loop % 10 == 9:  #
+                    time_end = time.time()
 
+                    print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
+                          ' R error: ' + str(np.round(R_err.item(), decimals=4)) +
+                          ' triplet loss: ' + str(np.round(corr_loss.item(), decimals=4)) +
+                          ' GPS err loss: ' + str(np.round(GPS_loss.item(), decimals=4)) +
+                          ' Time: ' + str(time_end - time_start))
+
+                    time_start = time_end
+
+            elif args.stage == 4:
+                
+                corr_maps = batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, masks=mask_dict)
+                corr_loss, GPS_loss = Weakly_supervised_loss_w_GPS_error(corr_maps, gt_shift_u, gt_shift_v,
+                                                                         gt_heading,
+                                                                         args,
+                                                                         net.meters_per_pixel,
+                                                                         args.GPS_error)
+
+                loss = args.contrastive_coe * corr_loss + args.GPS_error_coe * GPS_loss + render_loss
+
+                R_err = torch.abs(thetas[:, -1, -1].reshape(-1) - gt_heading.reshape(-1)).mean() * args.rotation_range
+
+                optimizer.zero_grad()
+                # optimizer2.zero_grad()
+                loss.backward()
+                optimizer.step()
+                # optimizer2.step()
+                # 打印每个参数的梯度
+                # for name, param in net.named_parameters():
+                #     if param.grad is not None:
+                #         # 检查梯度张量中是否存在非零元素
+                #         if (param.grad != 0).any():
+                #             print(name)
                 if Loop % 10 == 9:  #
                     time_end = time.time()
 
@@ -864,8 +803,8 @@ def train(net, args, save_path, name_path):
 
         print('Save Model ...')
         if args.stage == 0 or args.stage == 2:
-            if not os.path.exists(save_path):
-                os.makedirs(save_path)
+            if not os.path.exists(name_path):
+                os.makedirs(name_path)
 
             torch.save(net.state_dict(), os.path.join(name_path, 'model_' + str(epoch) + '.pth'))
         else:
@@ -875,8 +814,8 @@ def train(net, args, save_path, name_path):
             torch.save(net.state_dict(), os.path.join(name_path, 'model_' + str(epoch) + '.pth'))
 
         if args.stage == 0 or args.stage == 2:
-            test1_orien(net, args, save_path, epoch)
-            test2_orien(net, args, save_path, epoch)
+            test1_orien(net, args, name_path, epoch)
+            test2_orien(net, args, name_path, epoch)
         else:    
             test1(net, args, name_path, epoch)
             test2(net, args, name_path)
@@ -900,7 +839,7 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=8, help='batch size')
 
     parser.add_argument('--level', type=str, default='0_2', help=' ')
-    parser.add_argument('--channels', type=str, default='64_16_4', help='64_16_4 ')
+    parser.add_argument('--channels', type=str, default='32_16_4', help='64_16_4 ')
     parser.add_argument('--N_iters', type=int, default=1, help='any integer')
 
     # parser.add_argument('--confidence', type=int, default=0, help='use confidence or not')
@@ -987,15 +926,15 @@ if __name__ == '__main__':
     if args.test:
         net.load_state_dict(torch.load(os.path.join(
             name_path.replace('lat' + str(args.shift_range_lat) + 'm_lon' + str(args.shift_range_lon), 'lat20.0m_lon20.0'),
-            'model_0.pth')), strict=False)
+            'model_1.pth')), strict=False)
         # test1(net, args, save_path, epoch=2)
         # test2(net, args, save_path)
         if args.stage == 2:
-            # test1_orien(net, args, save_path, epoch=0)
-            test2_orien(net, args, save_path, epoch=0)
+            test1_orien(net, args, name_path, epoch=0)
+            test2_orien(net, args, name_path, epoch=0)
         else:    
-            test1(net, args, save_path, epoch=2)
-            test2(net, args, save_path)
+            test1(net, args, name_path, epoch=1)
+            test2(net, args, name_path)
 
     else:
 
@@ -1013,28 +952,26 @@ if __name__ == '__main__':
         elif (args.stage == 3) and args.rotation_range > 0:
             if args.share:
                 net.load_state_dict(torch.load(
-                    os.path.join(save_path.replace('Stage3', 'Stage2').replace(args.proj, 'geo'), 'model_2.pth')), strict=False)
+                    os.path.join(name_path.replace('Stage3', 'Stage2').replace(args.proj, 'geo'), 'model_2.pth')), strict=False)
             else:
                 net.load_state_dict(torch.load(
-                    os.path.join(save_path.replace('Stage3', 'Stage2').replace(args.proj, 'geo') + '_Share', 'model_2.pth')), strict=False)
+                    os.path.join(name_path.replace('Stage3', 'Stage2').replace(args.proj, 'geo') + '_Share', 'model_2.pth')), strict=False)
             print("load pretrained model from Stage2:")
-            print(os.path.join(save_path.replace('Stage3', 'Stage2'),
+            print(os.path.join(name_path.replace('Stage3', 'Stage2'),
                                'model_2.pth'))
         elif args.stage == 2 and args.rotation_range > 0:
-
             net.load_state_dict(torch.load(
-                os.path.join(save_path.replace('Stage2', 'Stage0').replace(args.proj, 'geo'), 'model_2.pth')), strict=False)
+                os.path.join(name_path.replace('Stage2', 'Stage0').replace(args.proj, 'geo'), 'model_2.pth')), strict=False)
             print("load pretrained model from Stage0:")
-            print(os.path.join(save_path.replace('Stage2', 'Stage0'),
+            print(os.path.join(name_path.replace('Stage2', 'Stage0'),
                                'model_2.pth'))
         
         elif (args.stage == 4) and args.rotation_range > 0:
             
             net.load_state_dict(torch.load(
-                os.path.join(save_path.replace('Stage4', 'Stage0').replace(args.proj, 'geo').replace('Level2', "Level1"), 'model_2.pth')), strict=False)
-            print("load pretrained model from Stage0:")
-            print(os.path.join(save_path.replace('Stage4', 'Stage0'),
-                               'model_2.pth'))
+                os.path.join(name_path.replace('Stage4', 'Stage3').replace(args.proj, 'geo'), 'model_3.pth')), strict=False)
+            print("load pretrained model from Stage3:")
+            print(os.path.join(name_path.replace('Stage4', 'Stage0'), 'model_3.pth'))
         
         if args.visualize:
             net.load_state_dict(torch.load(os.path.join(save_path, 'model_2.pth')), strict=False)

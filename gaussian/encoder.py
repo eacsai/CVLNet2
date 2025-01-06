@@ -23,7 +23,7 @@ class Gaussians:
     features: Float[Tensor, "batch gaussian dim"]
 
 class GaussianEncoder(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, n_feature_channels) -> None:
         super(GaussianEncoder, self).__init__()
         self.backbone = BackboneDino()
         self.backbone_projection = nn.Sequential(
@@ -31,7 +31,7 @@ class GaussianEncoder(nn.Module):
             nn.Linear(self.backbone.d_out, 128),
         )
         self.depth_predictor = DepthPredictorMonocular()
-        self.gaussian_adapter = GaussianAdapter(n_feature_channels=64)
+        self.gaussian_adapter = GaussianAdapter(n_feature_channels)
         
         self.to_opacity = nn.Sequential(
             nn.ReLU(),
