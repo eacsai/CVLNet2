@@ -18,6 +18,7 @@ class Gaussians:
     rotations: Float[Tensor, "*batch 4"]
     color_harmonics: Float[Tensor, "*batch 3 _"]
     features: Float[Tensor, "*batch channels"]
+    confidence: Float[Tensor, "*batch 1"]
     opacities: Float[Tensor, " *batch"]
 
 
@@ -35,7 +36,7 @@ class GaussianAdapter(nn.Module):
         n_feature_channels: int
     ):
         super(GaussianAdapter, self).__init__()
-        self.n_feature_channels = n_feature_channels
+        self.n_feature_channels = 32
         self.d_color_sh = 25
         self.d_feature_sh = 9
         # Create a mask for the spherical harmonics coefficients. This ensures that at
@@ -60,6 +61,7 @@ class GaussianAdapter(nn.Module):
         opacities: Float[Tensor, "*#batch"],
         raw_gaussians: Float[Tensor, "*#batch _"],
         grd_feat: Float[Tensor, "batch channels height width"],
+        grd_conf: Float[Tensor, "batch channels height width"],
         image_shape: tuple[int, int],
         eps: float = 1e-8,
     ) -> Gaussians:
@@ -68,10 +70,12 @@ class GaussianAdapter(nn.Module):
             scales, rotations, color_sh \
                 = raw_gaussians.split((3, 4, 3 * self.d_color_sh), dim=-1)
             features = rearrange(grd_feat, "batch view channels height width -> batch view (height width) channels").unsqueeze(-2)
+            confidence = rearrange(grd_conf, "batch view channels height width -> batch view (height width) channels").unsqueeze(-2)
         else:
             scales, rotations, color_sh \
                 = raw_gaussians.split((3, 4, 3 * self.d_color_sh), dim=-1)
             features = torch.zeros(color_sh.shape[0], color_sh.shape[1], color_sh.shape[2], self.n_feature_channels, device=device).unsqueeze(-2)
+            confidence = torch.zeros(color_sh.shape[0], color_sh.shape[1], color_sh.shape[2], 1, device=device).unsqueeze(-2)
         # Map scale features to valid scale range.
         scale_min = 0.5
         scale_max = 15.0
@@ -87,6 +91,7 @@ class GaussianAdapter(nn.Module):
         color_sh = rearrange(color_sh, "... (c d_sh) -> ... c d_sh", c=3)
         color_sh = color_sh.broadcast_to((*opacities.shape, 3, self.d_color_sh)) * self.color_sh_mask
         features = features.broadcast_to((*opacities.shape, self.n_feature_channels))
+        confidence = confidence.broadcast_to((*opacities.shape, 1))
 
         # Create world-space covariance matrices.
         covariances = build_covariance(scales, rotations)
@@ -105,6 +110,7 @@ class GaussianAdapter(nn.Module):
             # Note: These aren't yet rotated into world space, but they're only used for
             # exporting Gaussians to ply files. This needs to be fixed...
             features=features,
+            confidence=confidence,
             scales=scales,
             rotations=rotations.broadcast_to((*scales.shape[:-1], 4)),
         )

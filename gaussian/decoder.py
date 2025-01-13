@@ -24,6 +24,7 @@ class DecoderOutput:
     color: Float[Tensor, "batch 3 height width"]
     depth: Float[Tensor, "batch height width"]
     feature: Float[Tensor, "batch channels height width"]
+    confidence: Float[Tensor, "batch 1 height width"]
 
 class GrdDecoder(nn.Module):
     def __init__(self) -> None:
@@ -58,14 +59,17 @@ class GrdDecoder(nn.Module):
             repeat(gaussians.color_harmonics, "b g c d_sh -> (b v) g c d_sh", v=v),
             repeat(gaussians.opacities, "b g -> (b v) g", v=v),
             repeat(gaussians.features, "b g c -> (b v) g c", v=v),
+            repeat(gaussians.confidence, "b g c -> (b v) g c", v=v),
         )
         color = rearrange(render_out.color, "(b v) c h w -> b v c h w", b=b, v=v)
         depth = rearrange(render_out.depth, "(b v) h w -> b v h w", b=b, v=v)
         feature = rearrange(render_out.feature, "(b v) c h w -> b v c h w", b=b, v=v)
+        confidence = rearrange(render_out.confidence, "(b v) c h w -> b v c h w", b=b, v=v)
         out = DecoderOutput(
             color=color,
             depth=depth,
             feature=feature,
+            confidence=confidence,
         )
         return out
 

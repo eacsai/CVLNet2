@@ -36,6 +36,7 @@ class Gaussians:
     opacities: Float[Tensor, "batch gaussian"]
     color_harmonics: Float[Tensor, "batch gaussian 3 d_sh"]
     features: Float[Tensor, "batch gaussian dim"]
+    confidence: Float[Tensor, "batch gaussian 1"]
 
 def _sanitize_color(color: Color) -> Float[Tensor, "#channel"]:
     # Convert tensor to list (or individual item).
@@ -248,6 +249,8 @@ def render_projections(
         heading = torch.zeros([B, 1], dtype=torch.float32, device=gaussians.means.device)
     color_out = []
     feature_out = []
+    confidence_out = []
+
     for b in range(B):
         # Compute the minima and maxima of the scene.
         minima = gaussians.means[b:b+1].min(dim=1).values
@@ -312,13 +315,16 @@ def render_projections(
             gaussians.color_harmonics[b:b+1],
             gaussians.opacities[b:b+1],
             gaussians.features[b:b+1],
+            gaussians.confidence[b:b+1],
             fov_degrees=10.0,
         )
         color = render_out.color
         feature = render_out.feature
+        confidence = render_out.confidence
         color_out.append(color)
         feature_out.append(feature)
-    return torch.cat(color_out, dim=0), torch.cat(feature_out, dim=0)
+        confidence_out.append(confidence)
+    return torch.cat(color_out, dim=0), torch.cat(feature_out, dim=0), torch.cat(confidence_out, dim=0)
 
 def render_to_decoder_output(
     render_output,

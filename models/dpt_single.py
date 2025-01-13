@@ -1,8 +1,6 @@
 import torchvision.models as models
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
-import torch
 from torch.nn.functional import interpolate
 
 def L2_norm(x):
@@ -42,47 +40,8 @@ class FeatureFusionBlock(nn.Module):
         x = self.resConfUnit2(x)
         return x
 
-class MLP(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
-        super(MLP, self).__init__()
-        self.fc1 = nn.Linear(input_size, hidden_size)  # 第一个全连接层
-        self.bn1 = nn.BatchNorm1d(hidden_size)  # 第一个批量归一化层
-        self.relu = nn.ReLU()  # ReLU 激活函数
-        self.fc2 = nn.Linear(hidden_size, output_size)  # 第二个全连接层
-        self.bn2 = nn.BatchNorm1d(output_size)  # 第二个批量归一化层
-
-    def forward(self, x):
-        batch_size, seq_length, _ = x.shape
-        x = x.view(-1, x.size(2))  # 将 x 变形为 [batch_size * seq_length, feature_dim]
-        
-        out = self.fc1(x)  # 输入经过第一个全连接层
-        out = self.bn1(out)  # 通过第一个批量归一化层
-        out = self.relu(out)  # 通过 ReLU 激活函数
-        out = self.fc2(out)  # 输入经过第二个全连接层
-        out = self.bn2(out)  # 通过第二个批量归一化层
-        
-        out = out.view(batch_size, seq_length, -1)  # 将输出重新变形为 [batch_size, seq_length, output_dim]
-        return out
-    
-class Linear(nn.Module):
-    def __init__(self, input_dim, output_dim, kernel_size=1):
-        super().__init__()
-        if type(input_dim) is not int:
-            input_dim = sum(input_dim)
-
-        assert type(input_dim) is int
-        padding = kernel_size // 2
-        self.conv = nn.Conv2d(input_dim, output_dim, kernel_size, padding=padding)
-
-    def forward(self, feats):
-        if type(feats) is list:
-            feats = torch.cat(feats, dim=1)
-
-        feats = interpolate(feats, scale_factor=4, mode="bilinear")
-        return self.conv(feats)
-
 class DPT(nn.Module):
-    def __init__(self, input_dims, output_dim=256, hidden_dim=512, kernel_size=3):
+    def __init__(self, input_dims, output_dim=32, hidden_dim=256, kernel_size=3):
         super().__init__()
         assert len(input_dims) == 4
         self.conv_0 = nn.Conv2d(input_dims[0], hidden_dim, 1, padding=0)
@@ -100,6 +59,11 @@ class DPT(nn.Module):
             nn.ReLU(True),
             nn.Conv2d(hidden_dim, output_dim, 3, padding=1)
         )
+        self.conf = nn.Sequential(
+            nn.ReLU(),
+            nn.Conv2d(output_dim, 1, kernel_size=(3, 3), stride=(1, 1), padding=1, bias=False),
+            nn.Sigmoid(),
+        )
 
     def forward(self, feats):
         """Prediction each pixel."""
@@ -110,7 +74,7 @@ class DPT(nn.Module):
         feats[2] = self.conv_2(feats[2])
         feats[3] = self.conv_3(feats[3])
 
-        feats = [interpolate(x, scale_factor=4) for x in feats]
+        feats = [interpolate(x, scale_factor=2) for x in feats]
 
         out = self.ref_3(feats[3], None)
         out = self.ref_2(feats[2], out)
@@ -119,5 +83,6 @@ class DPT(nn.Module):
 
         out = interpolate(out, scale_factor=2)
         out = self.out_conv(out)
-        out = interpolate(out, scale_factor=2)
-        return out
+        conf = nn.Sigmoid()(-self.conf(out))
+        # out = interpolate(out, scale_factor=2)
+        return L2_norm(out), conf

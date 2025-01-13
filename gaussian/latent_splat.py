@@ -71,6 +71,7 @@ def get_projection_matrix(
 class RenderOutput:
     color: Float[Tensor, "batch 3 height width"]
     feature: Float[Tensor, "batch channels height width"]
+    confidence: Float[Tensor, "batch channels height width"]
     mask: Float[Tensor, "batch height width"]
     depth: Float[Tensor, "batch height width"]
 
@@ -86,6 +87,7 @@ def render_cuda(
     gaussian_color_sh_coefficients: Float[Tensor, "batch gaussian 3 d_sh"],
     gaussian_opacities: Float[Tensor, "batch gaussian"],
     gaussian_feature: Union[Float[Tensor, "batch gaussian channels"], None] = None,
+    gaussian_confidence: Union[Float[Tensor, "batch gaussian"], None] = None,
     scale_invariant: bool = True,
     use_sh: bool = True
 ) -> RenderOutput:
@@ -105,6 +107,7 @@ def render_cuda(
     color_sh_degree = 0
     shs = None
     features = None
+    confidence = None
     colors_precomp = None
     if use_sh:
         if gaussian_color_sh_coefficients is not None:
@@ -116,11 +119,15 @@ def render_cuda(
             # dir_pp = gaussian_means - campos.unsqueeze(1)
             # dir_pp_normalized = dir_pp/dir_pp.norm(dim=-1, keepdim=True)
             features = gaussian_feature
+        if gaussian_confidence is not None:
+            confidence = gaussian_confidence
     else:
         if gaussian_color_sh_coefficients is not None:
             colors_precomp = gaussian_color_sh_coefficients[..., 0]
         if gaussian_feature is not None:
             features = gaussian_feature
+        if gaussian_confidence is not None:
+            confidence = gaussian_confidence
 
     b, _, _ = extrinsics.shape
     h, w = image_shape
@@ -136,6 +143,7 @@ def render_cuda(
 
     all_images = []
     all_feature_maps = []
+    all_confidence_maps = []
     all_masks = []
     all_depth_maps = []
     for i in range(b):
@@ -164,24 +172,27 @@ def render_cuda(
 
         row, col = torch.triu_indices(3, 3)
 
-        image, feature_map, mask, depth_map, _ = rasterizer(
+        image, feature_map, confidence_map, mask, depth_map, _ = rasterizer(
             means3D=gaussian_means[i],
             means2D=mean_gradients,
             shs=shs[i] if shs is not None else None,
             colors_precomp=colors_precomp[i] if colors_precomp is not None else None,
             features=features[i] if features is not None else None,
+            confidence=confidence[i] if confidence is not None else None,
             opacities=gaussian_opacities[i, ..., None],
             cov3D_precomp=gaussian_covariances[i, :, row, col],
         )
         all_images.append(image)
         all_feature_maps.append(feature_map)
+        all_confidence_maps.append(confidence_map)
         all_masks.append(mask.squeeze(0))
         all_depth_maps.append(depth_map.squeeze(0))
     all_images = torch.stack(all_images) if all_images[0] is not None else None
     all_feature_maps = torch.stack(all_feature_maps) if all_feature_maps[0] is not None else None
+    all_confidence_maps = torch.stack(all_confidence_maps) if all_confidence_maps[0] is not None else None
     all_masks = torch.stack(all_masks)
     all_depth_maps = torch.stack(all_depth_maps)
-    return RenderOutput(all_images, all_feature_maps, all_masks, all_depth_maps)
+    return RenderOutput(all_images, all_feature_maps, all_confidence_maps, all_masks, all_depth_maps)
 
 
 def render_cuda_orthographic(
@@ -197,6 +208,7 @@ def render_cuda_orthographic(
     gaussian_color_sh_coefficients: Float[Tensor, "batch gaussian 3 d_sh"],
     gaussian_opacities: Float[Tensor, "batch gaussian"],
     gaussian_feature: Union[Float[Tensor, "batch gaussian channels"], None] = None,
+    gaussian_confidence: Union[Float[Tensor, "batch gaussian"], None] = None,
     fov_degrees: float = 0.1,
     use_sh: bool = True,
     dump: Union[dict, None] = None,
@@ -207,6 +219,7 @@ def render_cuda_orthographic(
     color_sh_degree = 0
     shs = None
     features = None
+    confidence = None
     colors_precomp = None
     if use_sh:
         if gaussian_color_sh_coefficients is not None:
@@ -218,12 +231,15 @@ def render_cuda_orthographic(
             # dir_pp = gaussian_means - campos.unsqueeze(1)
             # dir_pp_normalized = dir_pp/dir_pp.norm(dim=-1, keepdim=True)
             features = gaussian_feature
+        if gaussian_confidence is not None:
+            confidence = gaussian_confidence
     else:
         if gaussian_color_sh_coefficients is not None:
             colors_precomp = gaussian_color_sh_coefficients[..., 0]
         if gaussian_feature is not None:
             features = gaussian_feature
-
+        if gaussian_confidence is not None:
+            confidence = gaussian_confidence
     # Create fake "orthographic" projection by moving the camera back and picking a
     # small field of view.
     fov_x = torch.tensor(fov_degrees, device=extrinsics.device).deg2rad()
@@ -254,6 +270,7 @@ def render_cuda_orthographic(
 
     all_images = []
     all_feature_maps = []
+    all_confidence_maps = []
     all_masks = []
     all_depth_maps = []
     for i in range(b):
@@ -282,24 +299,27 @@ def render_cuda_orthographic(
 
         row, col = torch.triu_indices(3, 3)
 
-        image, feature_map, mask, depth_map, _ = rasterizer(
+        image, feature_map, confidence_map, mask, depth_map, _ = rasterizer(
             means3D=gaussian_means[i],
             means2D=mean_gradients,
             shs=shs[i] if shs is not None else None,
             colors_precomp=colors_precomp[i] if colors_precomp is not None else None,
             features=features[i] if features is not None else None,
+            confidence=confidence[i] if confidence is not None else None,
             opacities=gaussian_opacities[i, ..., None],
             cov3D_precomp=gaussian_covariances[i, :, row, col],
         )
         all_images.append(image)
         all_feature_maps.append(feature_map)
+        all_confidence_maps.append(confidence_map)
         all_masks.append(mask.squeeze(0))
         all_depth_maps.append(depth_map.squeeze(0))
     all_images = torch.stack(all_images) if all_images[0] is not None else None
     all_feature_maps = torch.stack(all_feature_maps) if all_feature_maps[0] is not None else None
+    all_confidence_maps = torch.stack(all_confidence_maps) if all_confidence_maps[0] is not None else None
     all_masks = torch.stack(all_masks)
     all_depth_maps = torch.stack(all_depth_maps)
-    return RenderOutput(all_images, all_feature_maps, all_masks, all_depth_maps)
+    return RenderOutput(all_images, all_feature_maps, all_confidence_maps, all_masks, all_depth_maps)
 
 
 DepthRenderingMode = Literal["depth", "disparity", "relative_disparity", "log"]

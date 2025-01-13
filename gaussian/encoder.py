@@ -21,6 +21,7 @@ class Gaussians:
     opacities: Float[Tensor, "batch gaussian"]
     color_harmonics: Float[Tensor, "batch gaussian 3 color_d_sh"]
     features: Float[Tensor, "batch gaussian dim"]
+    confidence: Float[Tensor, "batch gaussian 1"]
 
 class GaussianEncoder(nn.Module):
     def __init__(self, n_feature_channels) -> None:
@@ -70,6 +71,7 @@ class GaussianEncoder(nn.Module):
         self,
         img: Float[Tensor, "batch view channels height width"],
         grd_feat: Union[Float[Tensor, "batch view channels height width"] | None],
+        grd_conf: Union[Float[Tensor, "batch view channels height width"] | None],
         camera_k: Float[Tensor, "batch view 3 3"],
         extrinsics: Float[Tensor, "batch view 4 4"],
         near: Float[Tensor, "batch view"],
@@ -116,6 +118,7 @@ class GaussianEncoder(nn.Module):
             self.map_pdf_to_opacity(densities) / gpp,
             gaussians[..., 2:],
             grd_feat,
+            grd_conf,
             (h, w),
         )
 
@@ -157,6 +160,10 @@ class GaussianEncoder(nn.Module):
             ),
             rearrange(
                 gaussians.features,
+                "b v r spp c -> b (v r spp) c",
+            ),
+            rearrange(
+                gaussians.confidence,
                 "b v r spp c -> b (v r spp) c",
             )
         )

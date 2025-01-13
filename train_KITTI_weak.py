@@ -637,6 +637,7 @@ def train(net, args, save_path, name_path):
                 # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.FeatureForT.parameters())
                 # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.dino_feat.parameters())
                 params = net.FeatureForT.parameters()
+                # params = net.dpt.parameters()
             else:
                 params = list(net.GrdFeatureForT.parameters()) + list(net.SatFeatureForT.parameters())
 
@@ -880,8 +881,8 @@ def getSavePath(args):
                 + '_Nit' + str(args.N_iters) + '_' + str(args.Optimizer) + '_' + str(args.proj) \
                 + '_Level' + args.level + '_Channels' + args.channels
 
-    if args.ConfGrd and args.stage > 0:
-        save_path = save_path + '_ConfGrd'
+    # if args.ConfGrd and args.stage > 0:
+    #     save_path = save_path + '_ConfGrd'
     if args.ConfSat and args.stage > 0:
         save_path = save_path + '_ConfSat'
 
@@ -950,15 +951,11 @@ if __name__ == '__main__':
             print(os.path.join(save_path.replace('Stage1', 'Stage2'),
                                'model_2.pth'))
         elif (args.stage == 3) and args.rotation_range > 0:
-            if args.share:
-                net.load_state_dict(torch.load(
-                    os.path.join(name_path.replace('Stage3', 'Stage2').replace(args.proj, 'geo'), 'model_2.pth')), strict=False)
-            else:
-                net.load_state_dict(torch.load(
-                    os.path.join(name_path.replace('Stage3', 'Stage2').replace(args.proj, 'geo') + '_Share', 'model_2.pth')), strict=False)
+            load_idx = 2
+            net.load_state_dict(torch.load(
+                    os.path.join(name_path.replace('Stage3', 'Stage2').replace(args.proj, 'geo'), f'model_{load_idx}.pth')), strict=False)
             print("load pretrained model from Stage2:")
-            print(os.path.join(name_path.replace('Stage3', 'Stage2'),
-                               'model_2.pth'))
+            print(os.path.join(name_path.replace('Stage3', 'Stage2'), f'model_{load_idx}.pth'))
         elif args.stage == 2 and args.rotation_range > 0:
             net.load_state_dict(torch.load(
                 os.path.join(name_path.replace('Stage2', 'Stage0').replace(args.proj, 'geo'), 'model_2.pth')), strict=False)

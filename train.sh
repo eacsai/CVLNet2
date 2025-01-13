@@ -28,10 +28,10 @@ python "./train_KITTI_weak.py" \
   --stage 2 \
   --share 1 \
   --level 1 \
-  --ConfGrd 0 \
+  --ConfGrd 1 \
   --contrastive_coe 1 \
-  --name "feat32_ori" \
-  --batch_size 8 \
+  --name "feat32_128*512" \
+  --batch_size 4 \
   --epochs 8
 
   python "./train_KITTI_weak.py" \
@@ -39,9 +39,9 @@ python "./train_KITTI_weak.py" \
     --stage 3 \
     --share 1 \
     --level 1 \
-    --ConfGrd 0 \
+    --ConfGrd 1 \
     --contrastive_coe 1 \
-    --name "feat32_ori" \
+    --name "feat32_dpt_conf" \
     --batch_size 8 \
     --epochs 8
 
