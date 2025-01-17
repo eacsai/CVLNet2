@@ -3,10 +3,16 @@ from math import isqrt
 from typing import Literal, Optional, Tuple, Union
 
 import torch
+
 from diff_gaussian_tw import (
     GaussianRasterizationSettings,
     GaussianRasterizer,
 )
+
+# from feat_gaussian import (
+#     GaussianRasterizationSettings,
+#     GaussianRasterizer,
+# )
 
 from einops import einsum, rearrange, repeat
 from jaxtyping import Float
@@ -84,7 +90,7 @@ def render_cuda(
     background_color: Float[Tensor, "batch 3"],
     gaussian_means: Float[Tensor, "batch gaussian 3"],
     gaussian_covariances: Float[Tensor, "batch gaussian 3 3"],
-    gaussian_color_sh_coefficients: Float[Tensor, "batch gaussian 3 d_sh"],
+    gaussian_color_sh_coefficients: Union[Float[Tensor, "batch gaussian 3 d_sh"], None],
     gaussian_opacities: Float[Tensor, "batch gaussian"],
     gaussian_feature: Union[Float[Tensor, "batch gaussian channels"], None] = None,
     gaussian_confidence: Union[Float[Tensor, "batch gaussian"], None] = None,
@@ -92,7 +98,6 @@ def render_cuda(
     use_sh: bool = True
 ) -> RenderOutput:
     assert gaussian_color_sh_coefficients is not None or gaussian_feature is not None
-    assert use_sh or gaussian_color_sh_coefficients.shape[-1] == 1
 
     # Make sure everything is in a range where numerical issues don't appear.
     if scale_invariant:
@@ -205,7 +210,7 @@ def render_cuda_orthographic(
     background_features: Float[Tensor, "batch 3"],
     gaussian_means: Float[Tensor, "batch gaussian 3"],
     gaussian_covariances: Float[Tensor, "batch gaussian 3 3"],
-    gaussian_color_sh_coefficients: Float[Tensor, "batch gaussian 3 d_sh"],
+    gaussian_color_sh_coefficients: Union[Float[Tensor, "batch gaussian 3 d_sh"], None],
     gaussian_opacities: Float[Tensor, "batch gaussian"],
     gaussian_feature: Union[Float[Tensor, "batch gaussian channels"], None] = None,
     gaussian_confidence: Union[Float[Tensor, "batch gaussian"], None] = None,

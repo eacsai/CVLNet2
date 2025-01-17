@@ -19,33 +19,19 @@ class Gaussians:
     means: Float[Tensor, "batch gaussian dim"]
     covariances: Float[Tensor, "batch gaussian dim dim"]
     opacities: Float[Tensor, "batch gaussian"]
-    color_harmonics: Float[Tensor, "batch gaussian 3 color_d_sh"]
-    feature: Float[Tensor, "batch gaussian dim"]
+    features: Float[Tensor, "batch gaussian dim"]
+    confidence: Float[Tensor, "batch gaussian 1"]
 
-@dataclass
-class VariationalGaussians(Gaussians):
-    feature_harmonics: Union[DiagonalGaussianDistribution, None] = None
-
-    def _to_gaussians(self, feature_harmonics: Float[Tensor, "batch gaussian channels d_feature_sh"]) -> Gaussians:
-        return Gaussians(self.means, self.covariances, self.opacities, self.color_harmonics, feature_harmonics)
-    def flatten(self) -> Gaussians:
-        return self._to_gaussians(self.feature_harmonics.params)
-    def mode(self) -> Gaussians:
-        return self._to_gaussians(self.feature_harmonics.mode())
-    def sample(self) -> Gaussians:
-        return self._to_gaussians(self.feature_harmonics.sample())
-
-class GaussianEncoder(nn.Module):
-    def __init__(self) -> None:
-        super(GaussianEncoder, self).__init__()
+class GaussianFeatEncoder(nn.Module):
+    def __init__(self, n_feature_channels) -> None:
+        super(GaussianFeatEncoder, self).__init__()
         self.backbone = BackboneDino()
         self.backbone_projection = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.backbone.d_out, 128),
         )
-
         self.depth_predictor = DepthPredictorMonocular()
-        self.gaussian_adapter = GaussianAdapter(n_feature_channels=4)
+        self.gaussian_adapter = GaussianAdapter()
         
         self.to_opacity = nn.Sequential(
             nn.ReLU(),
@@ -56,9 +42,16 @@ class GaussianEncoder(nn.Module):
             nn.ReLU(),
             nn.Linear(
                 128,
-                88,
+                41,
             ),
         )
+        # self.to_gaussians_feat = nn.Sequential(
+        #     nn.ReLU(),
+        #     nn.Linear(
+        #         128,
+        #         148,
+        #     ),
+        # )
         # High resolution skip only required in case of now downscaling
         self.high_resolution_skip = nn.Sequential(
             nn.Conv2d(3, 128, 7, 1, 3),
@@ -75,31 +68,29 @@ class GaussianEncoder(nn.Module):
 
     def forward(
         self,
-        img: Float[Tensor, "batch channels height width"],
-        camera_k: Float[Tensor, "batch 3 3"],
-        extrinsics: Float[Tensor, "batch 4 4"],
-        global_step: int,
-        near: Float[Tensor, "batch"],
-        far: Float[Tensor, "batch"],
+        img: Float[Tensor, "batch view channels height width"],
+        camera_k: Float[Tensor, "batch view 3 3"],
+        extrinsics: Float[Tensor, "batch view 4 4"],
+        near: Float[Tensor, "batch view"],
+        far: Float[Tensor, "batch view"],
         deterministic: bool = False,
-        visualization_dump: Optional[dict] = None,
-        variational: bool = True,
-    ) -> VariationalGaussians:
-        b = img.shape[:1]
+    ) -> Gaussians:
+        b, v, _, h, w = img.shape
         features = self.backbone(img)
         device = features.device
         h, w = features.shape[-2:]
-        features = rearrange(features, "b c h w -> b h w c").contiguous()
+        features = rearrange(features, "b v c h w -> b v h w c").contiguous()
         features = self.backbone_projection(features)
-        features = rearrange(features, "b h w c -> b c h w").contiguous()
+        features = rearrange(features, "b v h w c -> b v c h w").contiguous()
 
         if self.high_resolution_skip is not None:
             # Add the high-resolution skip connection.
-            skip = self.high_resolution_skip(img)
-            features = features + skip
+            skip = rearrange(img, "b v c h w -> (b v) c h w")
+            skip = self.high_resolution_skip(skip)
+            features = features + rearrange(skip, "(b v) c h w -> b v c h w", b=b, v=v)
 
         # Sample depths from the resulting features.
-        features = rearrange(features, "b c h w -> b (h w) c")
+        features = rearrange(features, "b v c h w -> b v (h w) c")
         depths, densities = self.depth_predictor.forward(
             features,
             near,
@@ -145,31 +136,27 @@ class GaussianEncoder(nn.Module):
         #     else 1
         # )
 
-        # gaussian_features = DiagonalGaussianDistribution(
-        #     **{"params" if variational else "mean": gaussian_features},
-        #     dim=-2
-        # )
         return Gaussians(
             rearrange(
                 gaussians.means,
-                "b r spp xyz -> b (r spp) xyz",
+                "b v r spp xyz -> b (v r spp) xyz",
             ),
             rearrange(
                 gaussians.covariances,
-                "b r spp i j -> b (r spp) i j",
+                "b v r spp i j -> b (v r spp) i j",
             ),
             rearrange(
                 gaussians.opacities,
-                "b r spp -> b (r spp)",
+                "b v r spp -> b (v r spp)",
             ),
             rearrange(
-                gaussians.color_harmonics,
-                "b r spp c d_c_sh -> b (r spp) c d_c_sh",
+                gaussians.features,
+                "b v r spp c -> b (v r spp) c",
             ),
             rearrange(
-                gaussians.feature,
-                "b r spp c -> b (r spp) c",
-            ),
+                gaussians.confidence,
+                "b v r spp c -> b (v r spp) c",
+            )
         )
 
     @property

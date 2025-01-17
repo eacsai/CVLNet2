@@ -34,7 +34,7 @@ class Gaussians:
     means: Float[Tensor, "batch gaussian dim"]
     covariances: Float[Tensor, "batch gaussian dim dim"]
     opacities: Float[Tensor, "batch gaussian"]
-    color_harmonics: Float[Tensor, "batch gaussian 3 d_sh"]
+    color_harmonics: Union[Float[Tensor, "batch gaussian 3 d_sh"], None]
     features: Float[Tensor, "batch gaussian dim"]
     confidence: Float[Tensor, "batch gaussian 1"]
 
@@ -312,7 +312,7 @@ def render_projections(
             torch.zeros((1, 3), dtype=torch.float32, device=device),
             gaussians.means[b:b+1],
             gaussians.covariances[b:b+1],
-            gaussians.color_harmonics[b:b+1],
+            gaussians.color_harmonics[b:b+1] if hasattr(gaussians, 'color_harmonics') else None,
             gaussians.opacities[b:b+1],
             gaussians.features[b:b+1],
             gaussians.confidence[b:b+1],

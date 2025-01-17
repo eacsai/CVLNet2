@@ -19,7 +19,7 @@ class Gaussians:
     means: Float[Tensor, "batch gaussian dim"]
     covariances: Float[Tensor, "batch gaussian dim dim"]
     opacities: Float[Tensor, "batch gaussian"]
-    color_harmonics: Float[Tensor, "batch gaussian 3 color_d_sh"]
+    color_harmonics: Union[Float[Tensor, "batch gaussian 3 color_d_sh"], None]
     features: Float[Tensor, "batch gaussian dim"]
     confidence: Float[Tensor, "batch gaussian 1"]
 

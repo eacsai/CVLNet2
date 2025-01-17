@@ -41,20 +41,31 @@ python "./train_KITTI_weak.py" \
     --level 1 \
     --ConfGrd 1 \
     --contrastive_coe 1 \
-    --name "feat32_dpt_conf" \
+    --name "feat32_dpt" \
     --batch_size 8 \
     --epochs 8
+
+  python "./train_KITTI_weak.py" \
+    --rotation_range 10 \
+    --stage 3 \
+    --share 1 \
+    --level 1 \
+    --ConfGrd 1 \
+    --contrastive_coe 1 \
+    --name "feat32_dpt" \
+    --batch_size 12 \
+    --epochs 3
 
 python "./train_KITTI_weak.py" \
   --rotation_range 10 \
   --stage 4 \
   --share 1 \
   --level 1 \
-  --ConfGrd 0 \
+  --ConfGrd 1 \
   --contrastive_coe 1 \
-  --name "feat32_ori" \
-  --batch_size 12 \
-  --epochs 8
+  --name "feat32_dpt_best" \
+  --batch_size 8 \
+  --epochs 5
 
 python "./train_vigor_2DoF.py" \
   --rotation_range 0 \

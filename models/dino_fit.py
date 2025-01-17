@@ -142,6 +142,7 @@ class DINO(torch.nn.Module):
         feat_dim = feat_dim * 2 if output == "dense-cls" else feat_dim
 
         num_layers = len(self.vit.blocks)
+        # TODO: change this to be 8,9,10,11
         multilayers = [
             num_layers // 4 - 1,
             num_layers // 2 - 1,
@@ -219,6 +220,7 @@ class DINO(torch.nn.Module):
             if y_i.shape[2] == 19:
                 y_i = F.interpolate(y_i, size=(16, 64), mode="bilinear", align_corners=True)
 
+            # TODO: change this to be concat
             outputs.append(x_i + y_i)
 
         return outputs[0] if len(outputs) == 1 else outputs

@@ -11,6 +11,7 @@ import scipy.io as scio
 from torchvision import transforms
 import ssl
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import OneCycleLR
 
 to_pil_img = transforms.ToPILImage()
 ssl._create_default_https_context = ssl._create_unverified_context  # for downloading pretrained VGG weights
@@ -440,7 +441,7 @@ def test1(net_test, args, save_path, epoch):
     return
 
 
-def test2(net_test, args, save_path):
+def test2(net_test, args, save_path, epoch):
 
     net_test.eval()
 
@@ -535,6 +536,11 @@ def test2(net_test, args, save_path):
     f = open(os.path.join(save_path, 'test2_results.txt'), 'a')
     print('-------------------------')
     f.write('------------------------\n')
+    f.write('====================================\n')
+    f.write('       EPOCH: ' + str(epoch) + '\n')
+    print('====================================')
+    print('       EPOCH: ' + str(epoch))
+
     line = 'Test2 results:'
     print(line)
     f.write(line + '\n')
@@ -619,43 +625,64 @@ def test2(net_test, args, save_path):
 
 def train(net, args, save_path, name_path):
     bestRankResult = 0.0
+    # optimizer = optim.Adam(net.parameters(), lr=base_lr)
+    if args.stage == 0:
+        if args.rotation_range == 0:
+            params = net.SatFeatureNet.parameters()
+        else:
+            params = list(net.SatFeatureNet.parameters()) + list(net.TransRefine.parameters())
+        optimizer = optim.Adam(params, lr=1e-4)
+    elif args.stage == 1 or args.stage == 3:
 
+        if args.share:
+            # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.FeatureForT.parameters())
+            # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.dino_feat.parameters())
+            # params = net.FeatureForT.parameters()
+            params = net.dpt.parameters()
+        else:
+            params = list(net.GrdFeatureForT.parameters()) + list(net.SatFeatureForT.parameters())
+        
+        # base_lr = 6.25e-05
+        # base_lr = base_lr * ((1.0 - float(epoch) / 10.0) ** (2.0))
+        # optimizer = optim.AdamW(params, lr= 6.25e-5, weight_decay=5e-4, eps=1e-8)
+        optimizer = optim.AdamW(params, lr= 6.25e-5, weight_decay=5e-3, eps=1e-8)
+        # TODO: change strategy to linear
+        scale = float(args.batch_size / 8)
+        scheduler = OneCycleLR(optimizer, 
+                                max_lr=6.25e-5 * scale,  # 6.25e-5
+                                steps_per_epoch=int(2456 / scale), 
+                                epochs=args.epochs, # 5
+                                anneal_strategy='cos',
+                                pct_start=0.05, # 0.005
+                                cycle_momentum=False,
+                                )
+
+    elif args.stage == 4:
+        params = net.feat_gaussian_encoder.parameters()
+        optimizer = optim.AdamW(params, lr= 6.25e-5, weight_decay=5e-3, eps=1e-8)
+        # TODO: change strategy to linear
+        scheduler = OneCycleLR(optimizer, 
+                                max_lr=1.25e-4,  # 6.25e-5
+                                steps_per_epoch=2456, 
+                                epochs=args.epochs, # 5
+                                anneal_strategy='cos',
+                                pct_start=0.05, # 0.005
+                                cycle_momentum=False,
+                                )
+        # scheduler = torch.optim.lr_scheduler.LinearLR(
+        #     optimizer,
+        #     1 / 2000,
+        #     1,
+        #     total_iters=2000,
+        # )
+
+    elif args.stage == 2:
+        params = net.gaussian_encoder.parameters()
+        optimizer = optim.Adam(params, lr=1e-4)
+    
     time_start = time.time()
     for epoch in range(args.resume, args.epochs):
         net.train()
-
-        # optimizer = optim.Adam(net.parameters(), lr=base_lr)
-        if args.stage == 0:
-            if args.rotation_range == 0:
-                params = net.SatFeatureNet.parameters()
-            else:
-                params = list(net.SatFeatureNet.parameters()) + list(net.TransRefine.parameters())
-            optimizer = optim.Adam(params, lr=1e-4)
-        elif args.stage == 1 or args.stage == 3:
-
-            if args.share:
-                # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.FeatureForT.parameters())
-                # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.dino_feat.parameters())
-                params = net.FeatureForT.parameters()
-                # params = net.dpt.parameters()
-            else:
-                params = list(net.GrdFeatureForT.parameters()) + list(net.SatFeatureForT.parameters())
-
-            optimizer = optim.Adam(params, lr=1e-4)
-        elif args.stage == 4:
-            params = net.gaussian_encoder.parameters()
-            optimizer = optim.Adam(params, lr=1e-4)
-            # scheduler = torch.optim.lr_scheduler.LinearLR(
-            #     optimizer,
-            #     1 / 2000,
-            #     1,
-            #     total_iters=2000,
-            # )
-
-        elif args.stage == 2:
-            params = net.gaussian_encoder.parameters()
-            optimizer = optim.Adam(params, lr=1e-4)
-
         trainloader = load_train_data(args.batch_size, args.shift_range_lat, args.shift_range_lon, args.rotation_range,
                                       weak_supervise=True, train_noisy=False, stage=args.stage,
                                       data_amount=args.supervise_amount)
@@ -665,6 +692,7 @@ def train(net, args, save_path, name_path):
         global_step = epoch * len(trainloader) * args.batch_size
         
         for Loop, Data in enumerate(trainloader, 0):
+            optimizer.zero_grad()
             sat_align_cam, sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_depth = [item.to(device) for item in Data[:8]]
 
             sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, mask_dict, shift_lats, shift_lons, thetas, render_loss = \
@@ -741,14 +769,14 @@ def train(net, args, save_path, name_path):
                                                                          net.meters_per_pixel,
                                                                          args.GPS_error)
 
-                loss = args.contrastive_coe * corr_loss + args.GPS_error_coe * GPS_loss + render_loss
+                loss = args.contrastive_coe * corr_loss + args.GPS_error_coe * GPS_loss
 
                 R_err = torch.abs(thetas[:, -1, -1].reshape(-1) - gt_heading.reshape(-1)).mean() * args.rotation_range
 
-                optimizer.zero_grad()
                 # optimizer2.zero_grad()
                 loss.backward()
                 optimizer.step()
+                scheduler.step()
                 # optimizer2.step()
                 # 打印每个参数的梯度
                 # for name, param in net.named_parameters():
@@ -758,11 +786,12 @@ def train(net, args, save_path, name_path):
                 #             print(name)
                 if Loop % 10 == 9:  #
                     time_end = time.time()
-
+                    current_lr = scheduler.get_last_lr()[0]
                     print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
                           ' R error: ' + str(np.round(R_err.item(), decimals=4)) +
                           ' triplet loss: ' + str(np.round(corr_loss.item(), decimals=4)) +
                           ' GPS err loss: ' + str(np.round(GPS_loss.item(), decimals=4)) +
+                          f' Learning Rate: {current_lr:.9f}' +
                           ' Time: ' + str(time_end - time_start))
 
                     time_start = time_end
@@ -776,14 +805,14 @@ def train(net, args, save_path, name_path):
                                                                          net.meters_per_pixel,
                                                                          args.GPS_error)
 
-                loss = args.contrastive_coe * corr_loss + args.GPS_error_coe * GPS_loss + render_loss
+                loss = corr_loss + render_loss
 
                 R_err = torch.abs(thetas[:, -1, -1].reshape(-1) - gt_heading.reshape(-1)).mean() * args.rotation_range
 
                 optimizer.zero_grad()
-                # optimizer2.zero_grad()
                 loss.backward()
                 optimizer.step()
+                scheduler.step()
                 # optimizer2.step()
                 # 打印每个参数的梯度
                 # for name, param in net.named_parameters():
@@ -793,11 +822,12 @@ def train(net, args, save_path, name_path):
                 #             print(name)
                 if Loop % 10 == 9:  #
                     time_end = time.time()
-
+                    current_lr = scheduler.get_last_lr()[0]
                     print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
                           ' R error: ' + str(np.round(R_err.item(), decimals=4)) +
                           ' triplet loss: ' + str(np.round(corr_loss.item(), decimals=4)) +
                           ' GPS err loss: ' + str(np.round(GPS_loss.item(), decimals=4)) +
+                          f' Learning Rate: {current_lr:.9f}' +
                           ' Time: ' + str(time_end - time_start))
 
                     time_start = time_end
@@ -819,7 +849,7 @@ def train(net, args, save_path, name_path):
             test2_orien(net, args, name_path, epoch)
         else:    
             test1(net, args, name_path, epoch)
-            test2(net, args, name_path)
+            test2(net, args, name_path, epoch)
 
     print('Finished Training')
 
@@ -831,7 +861,7 @@ def parse_args():
 
     parser.add_argument('--epochs', type=int, default=3, help='number of training epochs')
 
-    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')  # 1e-2
+    parser.add_argument('--lr', type=float, default=6.25e-05, help='learning rate')  # 1e-2
 
     parser.add_argument('--rotation_range', type=float, default=10., help='degree')
     parser.add_argument('--shift_range_lat', type=float, default=20., help='meters')
@@ -935,7 +965,7 @@ if __name__ == '__main__':
             test2_orien(net, args, name_path, epoch=0)
         else:    
             test1(net, args, name_path, epoch=1)
-            test2(net, args, name_path)
+            test2(net, args, name_path, epoch=1)
 
     else:
 
@@ -966,9 +996,9 @@ if __name__ == '__main__':
         elif (args.stage == 4) and args.rotation_range > 0:
             
             net.load_state_dict(torch.load(
-                os.path.join(name_path.replace('Stage4', 'Stage3').replace(args.proj, 'geo'), 'model_3.pth')), strict=False)
+                os.path.join(name_path.replace('Stage4', 'Stage3').replace(args.proj, 'geo'), 'model_2.pth')), strict=False)
             print("load pretrained model from Stage3:")
-            print(os.path.join(name_path.replace('Stage4', 'Stage0'), 'model_3.pth'))
+            print(os.path.join(name_path.replace('Stage4', 'Stage3'), 'model_2.pth'))
         
         if args.visualize:
             net.load_state_dict(torch.load(os.path.join(save_path, 'model_2.pth')), strict=False)

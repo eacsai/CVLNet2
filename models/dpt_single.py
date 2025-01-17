@@ -1,6 +1,7 @@
 import torchvision.models as models
 import torch.nn as nn
 import torch.nn.functional as F
+import torch
 from torch.nn.functional import interpolate
 
 def L2_norm(x):
@@ -57,7 +58,7 @@ class DPT(nn.Module):
         self.out_conv = nn.Sequential(
             nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1),
             nn.ReLU(True),
-            nn.Conv2d(hidden_dim, output_dim, 3, padding=1)
+            nn.Conv2d(hidden_dim, output_dim, 3, padding=1),
         )
         self.conf = nn.Sequential(
             nn.ReLU(),

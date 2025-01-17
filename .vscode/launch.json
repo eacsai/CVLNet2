@@ -46,8 +46,10 @@
             "--level", "1",
             "--ConfGrd", "1",
             "--contrastive_coe", "1",
-            "--name", "feat32_dpt_fix_eval",
+            // "--name", "feat32_dpt_fix_eval", // w_decay -3
+            "--name", "feat32_dpt", // batch_size 12
             "--batch_size", "8",
+            "--epochs", "3",
         ],
         "console": "integratedTerminal"
       },
@@ -63,9 +65,9 @@
             "--level", "1",
             "--ConfGrd", "1",
             "--contrastive_coe", "1",
-            "--name", "feat32_ori_depth",
-            "--batch_size", "12",
-            "--epochs", "8",
+            "--name", "feat32_dpt_best",
+            "--batch_size", "8",
+            "--epochs", "3",
         ],
         "console": "integratedTerminal"
       },

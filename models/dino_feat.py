@@ -46,8 +46,8 @@ def tokens_to_output(output_type, dense_tokens, cls_token, feat_hw):
 class DINO(torch.nn.Module):
     def __init__(
         self,
-        dino_name="dinov2",
-        model_name="vitg14",
+        dino_name="dino",
+        model_name="vitb16",
         output="dense-cls",
         layer=-1,
         return_multilayer=True,

@@ -46,7 +46,7 @@ class GrdDecoder(nn.Module):
         image_shape: tuple[int, int],
     ) -> DecoderOutput:
         b, v, _, _ = extrinsics.shape
-        color_sh = gaussians.color_harmonics
+        color_sh = gaussians.color_harmonics if hasattr(gaussians, 'color_harmonics') else None
         render_out = render_cuda(
             rearrange(extrinsics, "b v i j -> (b v) i j"),
             rearrange(intrinsics, "b v i j -> (b v) i j"),
@@ -56,7 +56,7 @@ class GrdDecoder(nn.Module):
             repeat(self.background_color[0], "c -> (b v) c", b=b, v=v),
             repeat(gaussians.means, "b g xyz -> (b v) g xyz", v=v),
             repeat(gaussians.covariances, "b g i j -> (b v) g i j", v=v),
-            repeat(gaussians.color_harmonics, "b g c d_sh -> (b v) g c d_sh", v=v),
+            repeat(gaussians.color_harmonics, "b g c d_sh -> (b v) g c d_sh", v=v) if hasattr(gaussians, 'color_harmonics') else None,
             repeat(gaussians.opacities, "b g -> (b v) g", v=v),
             repeat(gaussians.features, "b g c -> (b v) g c", v=v),
             repeat(gaussians.confidence, "b g c -> (b v) g c", v=v),
