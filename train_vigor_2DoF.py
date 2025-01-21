@@ -1,5 +1,4 @@
 import os
-
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
 os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
@@ -11,17 +10,12 @@ from dataLoader.Vigor_dataset import load_vigor_data
 # from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 import scipy.io as scio
-
-import ssl
-
-ssl._create_default_https_context = ssl._create_unverified_context  # for downloading pretrained VGG weights
+from torch.optim.lr_scheduler import OneCycleLR
 
 from models.models_vigor import ModelVIGOR, batch_wise_cross_corr, corr_for_translation, Weakly_supervised_loss_w_GPS_error, \
     corr_for_accurate_translation_supervision, GT_triplet_loss
 
-
 import numpy as np
-import os
 import argparse
 import time
 import matplotlib.pyplot as plt
@@ -50,7 +44,7 @@ def test(net_test, args, save_path):
             grd, sat, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
 
             sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict = \
-                net(None, sat, grd, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage)
+                net(sat, grd, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage, loop=i, save_dir=save_path)
 
             pred_u, pred_v, corr = corr_for_translation(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict,
                                                         args, sat_uncer_dict)
@@ -143,7 +137,7 @@ def val(dataloader, net, args, save_path, epoch, best=0.0, stage=None):
             grd, sat, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
 
             sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict = \
-                net(None, sat, grd, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage)
+                net(sat, grd, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage)
 
             pred_u, pred_v, corr = corr_for_translation(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict,
                                                         args, sat_uncer_dict)
@@ -232,16 +226,28 @@ def val(dataloader, net, args, save_path, epoch, best=0.0, stage=None):
 def train(net, args, save_path):
     bestResult = 0.0
 
+    params = net.FeatureForT.parameters()
+
+    # optimizer = optim.Adam(params, lr=1e-4)
+
+    optimizer = optim.AdamW(params, lr= 3.5e-4, weight_decay=5e-3, eps=1e-8)
+    # TODO: change strategy to linear
+    scale = float(args.batch_size / 8)
+    scheduler = OneCycleLR(optimizer, 
+                            max_lr=3.5e-4,  # 3.5e-4
+                            steps_per_epoch=int(5260 / scale), 
+                            epochs=args.epochs, # 5
+                            anneal_strategy='cos',
+                            pct_start=0.05,
+                            cycle_momentum=False,
+                            )
+
     time_start = time.time()
     for epoch in range(args.resume, args.epochs):
         net.train()
-        optimizer = optim.Adam(net.parameters(), lr=1e-4)
-        # scheduler = torch.optim.lr_scheduler.LinearLR(
-        #     optimizer,
-        #     start_factor=1 / 2000,
-        #     end_factor=1.0,
-        #     total_iters=2000,
-        # )
+
+        # params = list(net.GrdFeatureNet.parameters()) + list(net.SatFeatureNet.parameters())
+
         trainloader, valloader = load_vigor_data(args.batch_size, area=args.area, rotation_range=args.rotation_range,
                                                  train=True, weak_supervise=args.Supervision=='Weakly', amount=args.amount)
 
@@ -249,14 +255,11 @@ def train(net, args, save_path):
 
         for Loop, Data in enumerate(trainloader, 0):
 
-            grd, pers_imgs, depth_imgs, camera_k, extrinsics, sat, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
 
-            if args.Supervision == 'Gaussian':
-                loss = \
-                    net(None, sat, grd, pers_imgs, depth_imgs, camera_k, extrinsics, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage, loop=Loop, save_dir=save_path)
-            else:
-                sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict = \
-                    net(None, sat, grd, pers_imgs, depth_imgs, camera_k, extrinsics, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage, loop=Loop, save_dir=save_path)
+            grd, sat, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
+
+            sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict = \
+                net(sat, grd, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage, loop=Loop, save_dir=save_path)
 
 
             if args.Supervision == 'Fully':
@@ -280,43 +283,29 @@ def train(net, args, save_path):
 
                     time_start = time_end
 
-            elif args.Supervision == 'Gaussian':
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                # scheduler.step()
-                if Loop % 10 == 9:  #
-                    time_end = time.time()
-
-                    print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
-                          ' gaussian loss: ' + str(loss.item()) +
-                          ' Time: ' + str(time_end - time_start))
-
-                    time_start = time_end
-
-            else:
+            elif args.Supervision == 'Weakly':
 
                 corr_maps = batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, sat_uncer_dict)
-
 
                 corr_loss, GPS_loss = Weakly_supervised_loss_w_GPS_error(corr_maps, gt_shift_u, gt_shift_v,
                                                                          args,
                                                                          meter_per_pixel,
                                                                          args.GPS_error)
 
-                loss = corr_loss + args.GPS_error_coe * GPS_loss
-
+                # loss = corr_loss + args.GPS_error_coe * GPS_loss
+                loss = corr_loss + GPS_loss * 0
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-
-
+                scheduler.step()
+                
                 if Loop % 10 == 9:  #
                     time_end = time.time()
-
+                    current_lr = scheduler.get_last_lr()[0]
                     print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
                           ' triplet loss: ' + str(np.round(corr_loss.item(), decimals=4)) +
                           ' GPS loss: ' + str(np.round(GPS_loss.item(), decimals=4)) +
+                          f' Learning Rate: {current_lr:.9f}' +
                           ' Time: ' + str(time_end - time_start))
 
                     time_start = time_end
@@ -327,7 +316,7 @@ def train(net, args, save_path):
 
         torch.save(net.state_dict(), os.path.join(save_path, 'model_' + str(epoch) + '.pth'))
 
-        # bestResult = val(valloader, net, args, save_path, epoch, best=bestResult, stage=args.stage)
+        bestResult = val(valloader, net, args, save_path, epoch, best=bestResult, stage=args.stage)
 
 
     print('Finished Training')
@@ -343,10 +332,10 @@ def parse_args():
 
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
 
-    parser.add_argument('--batch_size', type=int, default=2, help='batch size')
+    parser.add_argument('--batch_size', type=int, default=8, help='batch size')
 
-    parser.add_argument('--level', type=str, default='0_2', help=' ')
-    parser.add_argument('--channels', type=str, default='64_16_4', help=' ')
+    parser.add_argument('--level', type=str, default='1', help=' ')
+    parser.add_argument('--channels', type=str, default='32_16_4', help=' ')
     parser.add_argument('--N_iters', type=int, default=1, help='any integer')
 
     parser.add_argument('--Optimizer', type=str, default='TransV1', help='LM or SGD')
@@ -370,8 +359,8 @@ def parse_args():
     parser.add_argument('--task', type=str, default='2DoF',
                         help='')
 
-    parser.add_argument('--Supervision', type=str, default='Gaussian',
-                        help='Weakly or Fully or Gaussian')
+    parser.add_argument('--Supervision', type=str, default='Weakly',
+                        help='Weakly or Fully')
 
     parser.add_argument('--visualize', type=int, default=0, help='0 or 1')
 
@@ -379,6 +368,8 @@ def parse_args():
     parser.add_argument('--grd', type=float, default=0., help='')
     parser.add_argument('--sat_grd', type=float, default=1., help='')
     parser.add_argument('--amount', type=float, default=1., help='')
+    parser.add_argument('--name', type=str, default='test', help='')
+    parser.add_argument('--grd_res', type=int, default=40, help='')
 
     args = parser.parse_args()
 
@@ -386,7 +377,7 @@ def parse_args():
 
 
 def getSavePath(args):
-    restore_path = './ModelsVIGOR/' + str(args.task) \
+    restore_path = '/home/wangqw/video_program/CVLNet2/ModelsVIGOR/' + str(args.task) \
                    + '/' + args.area + '_rot' + str(args.rotation_range) \
                    + '_' + str(args.proj) \
                    + '_Level' + args.level + '_Channels' + args.channels
@@ -406,7 +397,7 @@ def getSavePath(args):
         save_path = save_path + '_Share'
 
     save_path += '_' + args.Supervision
-
+    save_path += '_' + args.name
     if args.amount < 1:
         save_path = save_path + str(args.amount) + '%'
 
@@ -429,9 +420,6 @@ if __name__ == '__main__':
     save_path, restore_path = getSavePath(args)
 
     net = ModelVIGOR(args, device)
-    if args.multi_gpu:
-        net = nn.DataParallel(net, dim=0)
-
     net.to(device)
 
     if args.test:
@@ -445,8 +433,9 @@ if __name__ == '__main__':
                                 strict=False)
             print("resume from " + 'model_' + str(args.resume - 1) + '.pth')
 
-        if args.visualize:
-            net.load_state_dict(torch.load(os.path.join(save_path, 'Model_best.pth')), strict=False)
-
+        if args.Supervision == 'Weakly':
+            path = "/home/wangqw/video_program/CVLNet2/ModelsVIGOR/2DoF/same_rot0.0_geo_Level1_Channels32_16_4_ConfGrd_Gaussian_20face_40"
+            net.load_state_dict(torch.load(os.path.join(path, 'model_3.pth')), strict=False)
+            net.gaussian_encoder.eval()
         train(net, args, save_path)
 

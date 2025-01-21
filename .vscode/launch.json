@@ -168,5 +168,21 @@
             "--name", "6face_160to160",
         ],
       },
+      {
+        "name": "Python train_vigor_2DoF_20face_40",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${file}",
+        "console": "integratedTerminal",
+        "args": [
+            "--rotation_range", "0",
+            "--area", "same",
+            "--name", "20face_40_sch",
+            "--Supervision", "Weakly",
+            "--grd_res", "40",
+            "--test", "0",
+            "--rotation_range", "180",
+        ],
+      },
   ]
 }

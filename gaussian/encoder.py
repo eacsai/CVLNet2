@@ -70,8 +70,8 @@ class GaussianEncoder(nn.Module):
     def forward(
         self,
         img: Float[Tensor, "batch view channels height width"],
-        grd_feat: Union[Float[Tensor, "batch view channels height width"] | None],
-        grd_conf: Union[Float[Tensor, "batch view channels height width"] | None],
+        grd_feat: Union[Float[Tensor, "batch view channels height width"] , None],
+        grd_conf: Union[Float[Tensor, "batch view channels height width"] , None],
         camera_k: Float[Tensor, "batch view 3 3"],
         extrinsics: Float[Tensor, "batch view 4 4"],
         near: Float[Tensor, "batch view"],

@@ -241,7 +241,8 @@ def render_projections(
     resolution: tuple[int, int],
     margin: float = 0.1,
     heading: Union[Tensor, None] = None,
-    look_axis = 1
+    look_axis = 1,
+    rot_range = 10.0,
 ) -> Float[Tensor, "batch 3 3 height width"]:
     device = gaussians.means.device
     B, _, _ = gaussians.means.shape
@@ -279,7 +280,7 @@ def render_projections(
 
         extrinsics[:, look_axis, 3] = scene_minima[:, look_axis]
         extrinsics[:, 3, 3] = 1
-        real_heading = heading[b] * 10.0 / 180 * np.pi
+        real_heading = heading[b] * rot_range / 180 * np.pi
         cos = torch.cos(-real_heading)
         sin = torch.sin(-real_heading)
         zeros = torch.zeros_like(cos)

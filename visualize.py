@@ -2,6 +2,8 @@ import numpy as np
 from sklearn.decomposition import PCA
 from PIL import Image
 import os
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
 
 def reshape_normalize(x):
     '''
@@ -23,8 +25,8 @@ def normalize(x):
     denominator = np.where(denominator == 0, 1, denominator)
     return x / denominator
 
-def single_features_to_RGB(sat_features, img_name='test_img.png'):
-    sat_feat = sat_features[:1,:,:,:].data.cpu().numpy()
+def single_features_to_RGB(sat_features, idx=0, img_name='test_img.png'):
+    sat_feat = sat_features[idx:idx+1,:,:,:].data.cpu().numpy()
     # 1. 重塑特征图形状为 [256, 64*64]
     B, C, H, W = sat_feat.shape
     flatten = np.concatenate([sat_feat], axis=0)
@@ -39,9 +41,9 @@ def single_features_to_RGB(sat_features, img_name='test_img.png'):
     # sat = sat.resize((512, 512))
     sat.save(img_name)
 
-def sat_features_to_RGB(sat_features, grd_features):
-    sat_feat = sat_features[:1,:,:,:].data.cpu().numpy()
-    grd_feat = grd_features[:1,:,:,:].data.cpu().numpy()
+def sat_features_to_RGB(sat_features, grd_features, idx=0):
+    sat_feat = sat_features[idx:idx+1,:,:,:].data.cpu().numpy()
+    grd_feat = grd_features[idx:idx+1,:,:,:].data.cpu().numpy()
     # 1. 重塑特征图形状为 [256, 64*64]
     B, C, A, A = sat_feat.shape
     _, _, H, W = grd_feat.shape
@@ -133,3 +135,144 @@ def features_to_RGB(sat_feat, g2s_feat_center, g2s_conf_center, g2s_feat_gt, g2s
         g2s_gt.save(os.path.join(save_dir, 'level_' + str(level) + '_g2s_feat_gt_conf' + str(loop * B + idx) + '.png'))
 
     return
+
+
+def pca_2d_hsv_color(pca_2d, H, W):
+    """
+    将 2D PCA 的结果 (H*W, 2)：
+      1. 对 x, y 各自做 min-max 归一化 -> [0,1]
+      2. 将 (x, y) 映射到 HSV: H=x, S=y, V=1.0
+      3. 转成 RGB，最后 reshape 到 (H, W, 3)
+    """
+    # pca_2d: shape (H*W, 2)
+    pca_2d_norm = pca_2d.copy()
+
+    # 分别对 x, y 做 min-max
+    x_min, x_max = pca_2d_norm[:,0].min(), pca_2d_norm[:,0].max()
+    y_min, y_max = pca_2d_norm[:,1].min(), pca_2d_norm[:,1].max()
+    pca_2d_norm[:,0] = (pca_2d_norm[:,0] - x_min) / (x_max - x_min + 1e-8)
+    pca_2d_norm[:,1] = (pca_2d_norm[:,1] - y_min) / (y_max - y_min + 1e-8)
+
+    # HSV: hue = x, saturation = y, value = 1.0
+    hsv = np.zeros((pca_2d_norm.shape[0], 3))
+    hsv[:, 0] = pca_2d_norm[:,0]       # Hue
+    hsv[:, 1] = pca_2d_norm[:,1]       # Saturation
+    hsv[:, 2] = 1.0                    # Value=1
+    # hsv[:, 2] = 0.7                    # Value=1
+    # 转成 RGB
+    rgb = mcolors.hsv_to_rgb(hsv)  # (H*W, 3)
+    rgb = rgb.reshape(H, W, 3)     # (H, W, 3)
+    gamma = 1.2  # >1会让图整体变暗
+    rgb = rgb ** (1 / gamma)
+    return rgb
+
+def sat_features_to_RGB_2D_PCA(sat_features, grd_features, idx=0):
+    """
+    1) 取第 idx 个 batch 的 sat_feat, grd_feat
+    2) 用 2D PCA 降维 -> (x, y)
+    3) 每张图各自 reshape 回原尺寸后，映射到 HSV->RGB
+    4) 保存可视化结果
+    """
+    def reshape_normalize(feat):
+        """
+        feat: shape (B, C, H, W)
+        先把它 reshape 成 (B*H*W, C) 方便 PCA 的 transform。
+        """
+        B, C, H, W = feat.shape
+        # (B, C, H, W) -> (B, C, H*W)
+        feat = feat.reshape(B, C, -1)  
+        # (B, C, H*W) -> (B, H*W, C)
+        feat = feat.transpose(0,2,1)
+        # (B, H*W, C) -> (B*H*W, C)
+        feat = feat.reshape(-1, C)
+        return feat
+    # 取第 idx 个的特征
+    sat_feat = sat_features[idx:idx+1,:,:,:].data.cpu().numpy()
+    grd_feat = grd_features[idx:idx+1,:,:,:].data.cpu().numpy()
+
+    B, C, A, A_ = sat_feat.shape  # A == A_
+    _, _, H, W = grd_feat.shape
+
+    # (1) reshape + 合并做 PCA 拟合（确保同一映射）
+    sat_flat = reshape_normalize(sat_feat)  # shape: (A*A, C)
+    grd_flat = reshape_normalize(grd_feat)  # shape: (H*W, C)
+    combined = np.concatenate([sat_flat, grd_flat], axis=0)  # (A*A + H*W, C)
+
+    # (2) 先整体 normalize，再 2D PCA
+    combined_norm = normalize(combined)
+    pca = PCA(n_components=2, random_state=42)
+    pca.fit(combined_norm)
+
+    # 分别 transform
+    sat_2d = pca.transform(normalize(sat_flat))  # shape: (A*A, 2)
+    grd_2d = pca.transform(normalize(grd_flat))  # shape: (H*W, 2)
+
+    # (3) 映射到 HSV->RGB
+    sat_rgb = pca_2d_hsv_color(sat_2d, A, A)
+    grd_rgb = pca_2d_hsv_color(grd_2d, H, W)
+
+    # (4) 转成 [0,255] 并保存图像
+    sat_img = Image.fromarray((sat_rgb * 255).astype(np.uint8))
+    sat_img.save('sat_feat_2dpca.png')
+
+    grd_img = Image.fromarray((grd_rgb * 255).astype(np.uint8))
+    grd_img.save('grd_feat_2dpca.png')
+
+    print("Saved sat_feat_2dpca.png and grd_feat_2dpca.png.")
+
+
+def grd_features_to_RGB_2D_PCA_concat(grd_features, b_idx=0):
+    """
+    仅针对 grd_features, 形状: (B, V, C, H, W).
+    1. 遍历同一个 batch b_idx 下的所有 v_idx -> 得到多张单图
+    2. 将它们从上到下拼接成一张图
+    3. 保存最终的大图
+    """
+    B, V, C, H, W = grd_features.shape
+
+    # 判断 b_idx 合法
+    assert 0 <= b_idx < B, f"b_idx={b_idx} 超出范围 [0, {B-1}]"
+
+    # 用于存储每个视角的单图 (PIL Image)
+    image_list = []
+
+    for v_idx in range(V):
+        # 1. 取出第 b_idx 个 batch、第 v_idx 个视角特征
+        #    如果 grd_features 在 GPU，需要先 .cpu().numpy()
+        feat = grd_features[b_idx, v_idx].detach().cpu().numpy()  # shape (C, H, W)
+
+        # 2. reshape 成 (H*W, C)，然后 normalize
+        feat_reshaped = feat.reshape(C, -1).transpose(1, 0)  # (H*W, C)
+        feat_norm = normalize(feat_reshaped)
+
+        # 3. 2D PCA
+        pca = PCA(n_components=2, random_state=42)
+        pca_2d = pca.fit_transform(feat_norm)  # (H*W, 2)
+
+        # 4. 映射到 HSV->RGB
+        rgb = pca_2d_hsv_color(pca_2d, H, W)
+
+        # 5. 转成 [0,255] 并生成 PIL Image
+        img = Image.fromarray((rgb * 255).astype(np.uint8))
+        image_list.append(img)
+
+    # ---- 所有视角的图像都在 image_list 里了，现在拼接它们 ----
+
+    # 确定拼接后图像的宽度为所有图的最大宽度(一般它们应该相同)
+    total_width = max(im.width for im in image_list)
+    # 从上到下拼接，高度相加
+    total_height = sum(im.height for im in image_list)
+
+    # 建立一个空白画布来放置它们
+    concat_img = Image.new("RGB", (total_width, total_height))
+
+    # 逐张贴上去
+    y_offset = 0
+    for im in image_list:
+        concat_img.paste(im, (0, y_offset))
+        y_offset += im.height
+
+    # 最终保存
+    out_filename = f'grd_feat_2dpca_b{b_idx}_concat.png'
+    concat_img.save(out_filename)
+    print(f"Saved concatenated image: {out_filename}")

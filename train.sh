@@ -81,3 +81,15 @@ python "./train_vigor_2DoF.py" \
   --rotation_range 0 \
   --area "same" \
   --name '6face_160to160'
+
+python "./train_vigor_2DoF.py" \
+  --rotation_range 180 \
+  --share 0 \
+  --ConfGrd 1 \
+  --level 1 \
+  --Supervision "Weakly" \
+  --area "same" \
+  --name '20face_40_same_180' \
+  --batch_size 16 \
+  --epochs 15 \
+  --grd_res 40

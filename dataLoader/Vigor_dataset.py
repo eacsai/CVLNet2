@@ -10,15 +10,9 @@ import torch
 
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from depth_anything_v2.dpt import DepthAnythingV2
-import cv2
-import torch.nn.functional as F
-
 
 num_thread_workers = 8
 root = '/data/dataset/wqw/VIGOR'
-
-
 
 class VIGORDataset(Dataset):
     def __init__(self, root, rotation_range, label_root='splits__corrected', split='same', train=True, transform=None, pos_only=True, amount=1.):
@@ -117,11 +111,12 @@ class VIGORDataset(Dataset):
         # full ground panorama
         try:
             grd = PIL.Image.open(os.path.join(self.grd_list[idx]))
-            grd = grd.convert('RGB')         
+            grd = grd.convert('RGB')
         except:
             print('unreadable image')
             grd = PIL.Image.new('RGB', (320, 640))  # if the image is unreadable, use a blank image
         grd = self.grdimage_transform(grd)
+
         # generate a random rotation
         rotation = np.random.uniform(low=-1.0, high=1.0)  #
         rotation_angle = rotation * self.rotation_range
@@ -163,22 +158,7 @@ class VIGORDataset(Dataset):
         elif 'Chicago' in self.grd_list[idx]:
             city = 'Chicago'
 
-        pers_path = '/data/dataset/wqw/VIGOR/' + city + '/pers_imgs_160'
-        grd_name = self.grd_list[idx].split('/')[-1].replace('.jpg', '')
-        save_path = os.path.join(pers_path, f'{grd_name}_pers.pt')
-
-        grd_params = torch.load(save_path, map_location=torch.device('cpu'))
-        depth_imgs = grd_params['depth_imgs']
-        pers_imgs = grd_params['pers_imgs']
-        camera_k = grd_params['camera_k']
-        extrinsics = grd_params['extrinsics']
-
-        # depth_imgs = torch.zeros(1)
-        # pers_imgs = torch.zeros(1)
-        # camera_k = torch.zeros(1)
-        # extrinsics = torch.zeros(1)
-
-        return grd, pers_imgs, depth_imgs, camera_k, extrinsics, sat, \
+        return grd, sat, \
             torch.tensor(gt_shift_x, dtype=torch.float32), \
             torch.tensor(gt_shift_y, dtype=torch.float32), \
             torch.tensor(rotation, dtype=torch.float32), \
@@ -286,8 +266,9 @@ def load_vigor_data(batch_size, area="same", rotation_range=10, train=True, weak
             train_bs = DistanceBatchSampler(torch.utils.data.RandomSampler(training_set), batch_size, True,
                                             vigor.label[train_indices])
             train_dataloader = DataLoader(training_set, batch_sampler=train_bs, num_workers=num_thread_workers)
+
         else:
-            train_dataloader = DataLoader(training_set, batch_size=batch_size, shuffle=False)
+            train_dataloader = DataLoader(training_set, batch_size=batch_size, shuffle=True)
 
         val_dataloader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
 

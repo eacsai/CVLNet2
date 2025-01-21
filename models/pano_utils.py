@@ -1,20 +1,18 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-import PIL
 from PIL import Image
 from scipy.spatial.transform import Rotation
-from trimesh.creation import icosphere as IcoSphere
-import cv2
 import matplotlib.cm as cm
-import torch
+import cv2
+from trimesh.creation import icosphere as IcoSphere
 
 
 # Helper functions
 def _verts_to_dirs(pt_a, pt_b, pt_c, gen_res, ratio):
     # make pt_a the sole point
     def same_z(a, b):
-        return np.abs(a[2] - b[2]) < 1e-4
+        return torch.abs(a[2] - b[2]) < 1e-4
 
     assert same_z(pt_a, pt_b) or same_z(pt_b, pt_c) or same_z(pt_a, pt_c)
 
@@ -25,12 +23,12 @@ def _verts_to_dirs(pt_a, pt_b, pt_c, gen_res, ratio):
 
     assert same_z(pt_b, pt_c)
 
-    if np.cross(pt_c, pt_b)[2] < 0.:
+    if torch.cross(pt_c, pt_b)[2] < 0.:
         pt_b, pt_c = pt_c, pt_b
 
-    pt_a = torch.from_numpy(pt_a)
-    pt_b = torch.from_numpy(pt_b)
-    pt_c = torch.from_numpy(pt_c)
+    # pt_a = torch.from_numpy(pt_a)
+    # pt_b = torch.from_numpy(pt_b)
+    # pt_c = torch.from_numpy(pt_c)
 
     pt_m = (pt_b + pt_c) * .5
     down_vec = pt_a - pt_m
@@ -49,8 +47,8 @@ def _verts_to_dirs(pt_a, pt_b, pt_c, gen_res, ratio):
     right_vec *= 2
     down_vec *= 2
 
-    ii, jj = torch.meshgrid(torch.linspace(.5 / gen_res, 1. - .5 / gen_res, gen_res),
-                            torch.linspace(.5 / gen_res, 1. - .5 / gen_res, gen_res),
+    ii, jj = torch.meshgrid(torch.linspace(.5 / gen_res, 1. - .5 / gen_res, gen_res).to(pt_a.device),
+                            torch.linspace(.5 / gen_res, 1. - .5 / gen_res, gen_res).to(pt_a.device),
                             indexing='ij')
     to_vec = pt_base + right_vec * .5 + down_vec * .5
 
@@ -94,12 +92,12 @@ def split_panorama(panorama, gen_res=40, ratio=1.1, device='cpu'):
                    20 sub-images corresponding to icosphere faces.
     """
     ico_sphere = IcoSphere(subdivisions=0)
-    vertices, faces = torch.tensor(ico_sphere.vertices, dtype=torch.float32), ico_sphere.faces
+    vertices, faces = ico_sphere.vertices, ico_sphere.faces
     ang = np.arctan(.525731112119133606 / .850650808352039932)
     rot_vec = np.array([ang, 0., 0.])
     rot = Rotation.from_rotvec(rot_vec)
     vertices = rot.apply(vertices)
-    vertices = vertices.astype(np.float32)
+    vertices = torch.tensor(vertices, dtype=torch.float32, device=device)
 
     pers_imgs = []
     # Generate coords for each face
@@ -183,7 +181,6 @@ def save_sub_images(pers_imgs, output_dir):
         img.save(output_dir + f"ori_perspective_{i + 1}.png")
 
 
-
 def tensor_to_cv2_image(tensor):
     """
     将形状为 [3, H, W] 的 PyTorch 张量转换为适用于 OpenCV 的 [H, W, 3] 图像。
@@ -238,3 +235,22 @@ def showDepth(depth, raw_image):
     split_region = np.ones((raw_image.shape[0], 50, 3), dtype=np.uint8) * 255
     combined_result = cv2.hconcat([raw_image, split_region, depth])
     cv2.imwrite(output_path, combined_result)
+
+if __name__ == "__main__":
+    from pathlib import Path
+
+    # Define input and output paths
+    panorama_path = "image.png"  # Replace with the path to your panorama image
+    output_dir = Path("output_perspectives_CUBE")
+
+    # Load the panorama image
+    panorama = load_panorama(panorama_path)
+    print(f"Loaded panorama of shape: {panorama.shape}")
+
+    # Split the panorama into 20 sub-images
+    pers_imgs = split_panorama(panorama)
+    print(f"Generated {pers_imgs.shape[0]} sub-images of shape {pers_imgs.shape[1:]}")
+
+    # Save the sub-images
+    save_sub_images(pers_imgs, output_dir)
+    print(f"Saved sub-images to {output_dir}")
