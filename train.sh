@@ -33,7 +33,8 @@ python "./train_KITTI_weak.py" \
   --name "feat32_128*512" \
   --batch_size 4 \
   --epochs 8
-
+  
+  #6.25e-5 cos GPS
   python "./train_KITTI_weak.py" \
     --rotation_range 10 \
     --stage 3 \
@@ -41,20 +42,21 @@ python "./train_KITTI_weak.py" \
     --level 1 \
     --ConfGrd 1 \
     --contrastive_coe 1 \
-    --name "feat32_dpt" \
-    --batch_size 8 \
-    --epochs 8
-
-  python "./train_KITTI_weak.py" \
-    --rotation_range 10 \
-    --stage 3 \
-    --share 1 \
-    --level 1 \
-    --ConfGrd 1 \
-    --contrastive_coe 1 \
-    --name "feat32_dpt" \
+    --name "feat32_GPS" \
     --batch_size 12 \
-    --epochs 3
+    --epochs 10
+
+  #6.25e-5 cos
+  python "./train_KITTI_weak.py" \
+    --rotation_range 10 \
+    --stage 3 \
+    --share 1 \
+    --level 1 \
+    --ConfGrd 1 \
+    --contrastive_coe 1 \
+    --name "feat32_no_GPS" \
+    --batch_size 12 \
+    --epochs 10
 
 python "./train_KITTI_weak.py" \
   --rotation_range 10 \
@@ -64,8 +66,8 @@ python "./train_KITTI_weak.py" \
   --ConfGrd 1 \
   --contrastive_coe 1 \
   --name "feat32_dpt_best" \
-  --batch_size 8 \
-  --epochs 5
+  --batch_size 12 \
+  --epochs 4
 
 python "./train_vigor_2DoF.py" \
   --rotation_range 0 \

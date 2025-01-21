@@ -653,7 +653,7 @@ def train(net, args, save_path, name_path):
                                 steps_per_epoch=int(2456 / scale), 
                                 epochs=args.epochs, # 5
                                 anneal_strategy='cos',
-                                pct_start=0.05, # 0.005
+                                pct_start=0.005, # 0.005
                                 cycle_momentum=False,
                                 )
 
@@ -968,48 +968,6 @@ if __name__ == '__main__':
             test2(net, args, name_path, epoch=1)
 
     else:
-
-        if args.resume:
-            path = '/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage3/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32_dpt_best/model_2.pth'
-            net.load_state_dict(torch.load(path), strict=False)
-            print("resume from " + path)
-        
-        elif (args.stage == 1) and args.rotation_range > 0:
-
-            net.load_state_dict(torch.load(
-                os.path.join(save_path.replace('Stage1', 'Stage2').replace(args.proj, 'geo').replace(f'Level{args.level}', 'Level1'), 'model_2.pth')), strict=False)
-            print("load pretrained model from Stage2:")
-            print(os.path.join(save_path.replace('Stage1', 'Stage2'),
-                               'model_2.pth'))
-        elif (args.stage == 3) and args.rotation_range > 0:
-            load_idx = 3
-            path = '/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage2/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32'
-            net.load_state_dict(torch.load(
-                    os.path.join(path, f'model_{load_idx}.pth')), strict=False)
-            print("load pretrained model from Stage2:")
-            print(os.path.join(path, f'model_{load_idx}.pth'))
-        elif args.stage == 2 and args.rotation_range > 0:
-            net.load_state_dict(torch.load(
-                os.path.join(name_path.replace('Stage2', 'Stage0').replace(args.proj, 'geo'), 'model_2.pth')), strict=False)
-            print("load pretrained model from Stage0:")
-            print(os.path.join(name_path.replace('Stage2', 'Stage0'),
-                               'model_2.pth'))
-        
-        elif (args.stage == 4) and args.rotation_range > 0:
-            
-            net.load_state_dict(torch.load(
-                os.path.join(name_path.replace('Stage4', 'Stage3').replace(args.proj, 'geo'), 'model_2.pth')), strict=False)
-            print("load pretrained model from Stage3:")
-            print(os.path.join(name_path.replace('Stage4', 'Stage3'), 'model_2.pth'))
-        
-        if args.visualize:
-            net.load_state_dict(torch.load(os.path.join(save_path, 'model_2.pth')), strict=False)
-            print('------------------------')
-            print("load pretrained model from ", os.path.join(save_path, 'model_2.pth'))
-            print('------------------------')
-
-        lr = args.lr
-
         train(net, args, save_path, name_path)
 
 
