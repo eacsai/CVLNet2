@@ -95,3 +95,15 @@ python "./train_vigor_2DoF.py" \
   --batch_size 16 \
   --epochs 15 \
   --grd_res 40
+
+
+python "./train_KITTI_weak_direct.py" \
+  --rotation_range 0 \
+  --stage 3 \
+  --share 1 \
+  --level 1 \
+  --ConfGrd 1 \
+  --contrastive_coe 1 \
+  --name "forward_mapping_GPS" \
+  --batch_size 16 \
+  --epochs 5
