@@ -226,7 +226,7 @@ def showDepth(depth, raw_image):
     cmap = cm.Spectral
     depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
     depth = depth.cpu().detach().numpy()
-    depth = depth.astype(np.uint8)
+    depth = depth.astype(np.uint8)[0]
     
     depth = (cmap(depth)[:, :, :3] * 255)[:, :, ::-1].astype(np.uint8)
     

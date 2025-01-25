@@ -21,7 +21,7 @@ class BackboneDino(Backbone[BackboneDinoCfg]):
     def __init__(self, d_in: int = 3) -> None:
         super().__init__()
         assert d_in == 3
-        self.dino = torch.hub.load("facebookresearch/dino:main", 'dino_vitb8')
+        self.dino = torch.hub.load("facebookresearch/dino:main", 'dino_vitb8', trust_repo=True)
         self.resnet_backbone = BackboneResnet(
             d_in,
         )

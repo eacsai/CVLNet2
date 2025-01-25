@@ -226,64 +226,43 @@ def val(dataloader, net, args, save_path, epoch, best=0.0, stage=None):
 def train(net, args, save_path):
     bestResult = 0.0
 
-    params = net.FeatureForT.parameters()
-
-    # optimizer = optim.Adam(params, lr=1e-4)
-
-    optimizer = optim.AdamW(params, lr= 3.5e-4, weight_decay=5e-3, eps=1e-8)
-    # TODO: change strategy to linear
-    scale = float(args.batch_size / 8)
-    scheduler = OneCycleLR(optimizer, 
-                            max_lr=3.5e-4,  # 3.5e-4
-                            steps_per_epoch=int(5260 / scale), 
-                            epochs=args.epochs, # 5
-                            anneal_strategy='cos',
-                            pct_start=0.05,
-                            cycle_momentum=False,
-                            )
+    if args.Supervision == 'Weakly':
+        # params = net.FeatureForT.parameters()
+        params = net.dpt.parameters()
+        optimizer = optim.AdamW(params, lr= 3.5e-4, weight_decay=5e-3, eps=1e-8)
+        # TODO: change strategy to linear
+        scale = float(args.batch_size / 8)
+        scheduler = OneCycleLR(optimizer, 
+                                max_lr=1e-4,  # 3.5e-4
+                                steps_per_epoch=int(5260 / scale), 
+                                epochs=args.epochs, # 5
+                                anneal_strategy='cos',
+                                pct_start=0.01,
+                                cycle_momentum=False,
+                                )
+    
+    else:
+        params = net.gaussian_encoder.parameters()
+        optimizer = optim.Adam(params, lr=1e-4)
 
     time_start = time.time()
     for epoch in range(args.resume, args.epochs):
         net.train()
 
         # params = list(net.GrdFeatureNet.parameters()) + list(net.SatFeatureNet.parameters())
-
+        isTrain = True
         trainloader, valloader = load_vigor_data(args.batch_size, area=args.area, rotation_range=args.rotation_range,
-                                                 train=True, weak_supervise=args.Supervision=='Weakly', amount=args.amount)
+                                                 train=isTrain, weak_supervise=args.Supervision=='Weakly', amount=args.amount)
 
         print('batch_size:', args.batch_size, '\n num of batches:', len(trainloader))
 
         for Loop, Data in enumerate(trainloader, 0):
 
+            if args.Supervision == 'Weakly':
+                grd, sat, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
 
-            grd, sat, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
-
-            sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict = \
-                net(sat, grd, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage, loop=Loop, save_dir=save_path)
-
-
-            if args.Supervision == 'Fully':
-                corr_maps = corr_for_accurate_translation_supervision(sat_feat_dict, sat_conf_dict,
-                                                                      g2s_feat_dict, g2s_conf_dict, args, sat_uncer_dict)
-
-                GT_loss = GT_triplet_loss(corr_maps, gt_shift_u, gt_shift_v, args)
-                loss = GT_loss
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()  # This step is responsible for updating weights
-
-                if Loop % 10 == 9:  #
-                    time_end = time.time()
-
-                    print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
-                          ' GT_loss: ' + str(np.round(GT_loss.item(), decimals=2)) +
-                          # ' Weak_loss: ' + str(np.round(Weak_loss.item(), decimals=2)) +
-                          ' Time: ' + str(time_end - time_start))
-
-                    time_start = time_end
-
-            elif args.Supervision == 'Weakly':
+                sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict = \
+                    net(sat, grd, None, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage, loop=Loop, save_dir=save_path)
 
                 corr_maps = batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, sat_uncer_dict)
 
@@ -309,6 +288,22 @@ def train(net, args, save_path):
                           ' Time: ' + str(time_end - time_start))
 
                     time_start = time_end
+            
+            else:
+                grd, sat, depth_imgs, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
+                loss = \
+                    net(sat, grd, depth_imgs, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage, loop=Loop, save_dir=save_path)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                if Loop % 10 == 9:  #
+                    time_end = time.time()
+                    print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
+                          ' Render loss: ' + str(np.round(loss.item(), decimals=4)) +
+                          ' Time: ' + str(time_end - time_start))
+
+                    time_start = time_end
 
         print('Save Model ...')
         if not os.path.exists(save_path):
@@ -316,7 +311,8 @@ def train(net, args, save_path):
 
         torch.save(net.state_dict(), os.path.join(save_path, 'model_' + str(epoch) + '.pth'))
 
-        bestResult = val(valloader, net, args, save_path, epoch, best=bestResult, stage=args.stage)
+        if args.Supervision == 'Weakly':
+            bestResult = val(valloader, net, args, save_path, epoch, best=bestResult, stage=args.stage)
 
 
     print('Finished Training')
@@ -360,7 +356,7 @@ def parse_args():
                         help='')
 
     parser.add_argument('--Supervision', type=str, default='Weakly',
-                        help='Weakly or Fully')
+                        help='Weakly or Gaussian')
 
     parser.add_argument('--visualize', type=int, default=0, help='0 or 1')
 
@@ -434,8 +430,8 @@ if __name__ == '__main__':
             print("resume from " + 'model_' + str(args.resume - 1) + '.pth')
 
         if args.Supervision == 'Weakly':
-            path = "/home/wangqw/video_program/CVLNet2/ModelsVIGOR/2DoF/same_rot0.0_geo_Level1_Channels32_16_4_ConfGrd_Gaussian_20face_40"
-            net.load_state_dict(torch.load(os.path.join(path, 'model_3.pth')), strict=False)
+            path = "/home/wangqw/video_program/CVLNet2/ModelsVIGOR/2DoF/same_rot0.0_geo_Level1_Channels32_16_4_ConfGrd_Gaussian_20face_80"
+            net.load_state_dict(torch.load(os.path.join(path, 'model_2.pth')), strict=False)
             net.gaussian_encoder.eval()
         train(net, args, save_path)
 

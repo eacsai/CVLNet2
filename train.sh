@@ -85,17 +85,24 @@ python "./train_vigor_2DoF.py" \
   --name '6face_160to160'
 
 python "./train_vigor_2DoF.py" \
-  --rotation_range 180 \
+  --rotation_range 0 \
+  --Supervision "Weakly" \
+  --area "same" \
+  --name '20face_80_same_dpt160_6.25e-5' \
+  --batch_size 8 \
+  --epochs 15 \
+  --grd_res 80 \
+  --test 0
+
+python "./train_vigor_2DoF.py" \
+  --rotation_range 0 \
   --share 0 \
   --ConfGrd 1 \
   --level 1 \
-  --Supervision "Weakly" \
+  --Supervision "Gaussian" \
   --area "same" \
-  --name '20face_40_same_180' \
-  --batch_size 16 \
-  --epochs 15 \
-  --grd_res 40
-
+  --name '20face_new80' \
+  --batch_size 4
 
 python "./train_KITTI_weak_direct.py" \
   --rotation_range 0 \

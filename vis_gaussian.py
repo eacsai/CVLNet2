@@ -243,6 +243,7 @@ def render_projections(
     heading: Union[Tensor, None] = None,
     look_axis = 1,
     rot_range = 10.0,
+    mode = 'kitti',
 ) -> Float[Tensor, "batch 3 3 height width"]:
     device = gaussians.means.device
     B, _, _ = gaussians.means.shape
@@ -298,8 +299,12 @@ def render_projections(
         near = torch.zeros_like(far)
         # width = extents[:, right_axis]
         # height = extents[:, down_axis]
-        width = 101.0 / 2
-        height = 101.0 / 2
+        if mode == 'vigor':
+            width = 90
+            height = 90
+        else:
+            width = 101.0 / 2
+            height = 101.0 / 2
         # extrinsics[:, right_axis, 3] = 0
         # extrinsics[:, down_axis, 3] = 0
 

@@ -12,19 +12,24 @@ from fractions import Fraction
 from typing import Iterable, Tuple, Union
 from torchvision.transforms.functional import resize
 
-from models.pano_utils import split_panorama
+from models.pano_utils import split_panorama, showDepth, tensor_to_cv2_image
 from jaxtyping import Float
 from torch import Tensor
 from lpips import LPIPS
 import numpy as np
 
+from models.dino_fit import DINO
+from models.dpt_single import DPT
+
 from loss.lpips import convert_to_buffer
+# from gaussian.encoder_pano import GaussianEncoder
 from gaussian.encoder import GaussianEncoder
 from gaussian.decoder import GrdDecoder
 from vis_gaussian import render_projections
 from jacobian import grid_sample
 from visualize import *
 import cv2
+
 to_pil_image = transforms.ToPILImage()
 # original_raw_Lpips_step = 50000
 raw_Lpips_step = 25000
@@ -59,6 +64,10 @@ class ModelVIGOR(nn.Module):
 
         self.gaussian_encoder = GaussianEncoder(32)
         self.grd_decoder = GrdDecoder()
+
+        self.dino_feat = DINO()
+        self.dpt = DPT(self.dino_feat.feat_dim)
+        # self.dpt = DPT(self.dino_feat.feat_dim)
         # self.near = torch.ones(args.batch_size, self.face_num).to(device) * 0.5
         # self.far = torch.ones(args.batch_size, self.face_num).to(device) * 160
         self.FeatureForT = VGGUnet(self.level, self.channels)
@@ -70,34 +79,68 @@ class ModelVIGOR(nn.Module):
 
         torch.autograd.set_detect_anomaly(True)
 
-    def forwardGS(self, sat, grd, pers_imgs, depth_imgs, camera_k, extrinsics, meter_per_pixel, gt_rot=None, loop=None, save_dir=None):
-        b, v, c, h, w = pers_imgs.shape
-        grd_res = 160
-        # showDepth(depth_imgs[0,0], tensor_to_cv2_image(pers_imgs[0,0]))
-        self.near = torch.ones(b, v).to(pers_imgs.device) * 0.5
-        self.far = torch.ones(b, v).to(pers_imgs.device) * 160
-        gs_pers_imgs = F.interpolate(pers_imgs.view(b*v, c, h, w), (grd_res, grd_res), mode='bilinear', align_corners=True).view(b, v, c, grd_res, grd_res)
+    def forwardGS(self, sat, grd, depth_img):
+        grd_res = 80
+        # idx = torch.tensor([2, 3, 4, 7, 9, 10, 11, 14, 16, 19], dtype=torch.int64, device=sat.device)
+        # idx = torch.tensor([2, 3, 4, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19], dtype=torch.int64, device=sat.device)
+        idx = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], dtype=torch.int64, device=sat.device)
 
+        # idx = torch.tensor([0], dtype=torch.int64, device=sat.device)
+        # gs_grd = F.interpolate(grd, (160, 320), mode='bilinear', align_corners=True)
+        
+        mask = (grd != 0).any(dim=1, keepdim=True).float() 
+        depth_img = depth_img * mask * 80
+
+        pers_imgs, extrinsics, camera_k = split_panorama(grd, gen_res=grd_res, device=self.device)
+        depth_imgs, _, _ = split_panorama(depth_img, gen_res=grd_res, device=self.device)
+        
+        # depth_imgs = F.interpolate(depth_img, (grd_res, grd_res), mode='bilinear', align_corners=True)
+        # depth_imgs = depth_imgs.unsqueeze(2)
+        
+        index = 0
+        showDepth(depth_imgs[0, index], tensor_to_cv2_image(pers_imgs[0, index]))
+        b,v,c,h,w = pers_imgs.shape
+        camera_k = camera_k.unsqueeze(0).repeat(b, v, 1, 1)
+        extrinsics = extrinsics.unsqueeze(0).repeat(b, 1, 1, 1)
+        pers_imgs = pers_imgs[:, idx]
+        camera_k = camera_k[:, idx]
+        extrinsics = extrinsics[:, idx]
+
+        depth_imgs = depth_imgs[:, idx]
+        
+        R_transform = torch.tensor([
+            [0, -1,  0],
+            [0,  0, -1],
+            [1,  0,  0]
+        ], dtype=torch.float32, device=sat.device)
+
+        # 扩展 R_transform 为 4x4 齐次变换矩阵
+        R_transform_homo = torch.eye(4, dtype=torch.float32, device=sat.device)
+        R_transform_homo[:3, :3] = R_transform
+
+        # 将 extrinsics 转换到 OpenCV 坐标系
+        # extrinsics @ R_transform_homo.T 实现变换
+        extrinsics =  R_transform_homo @ extrinsics
+
+        v = len(idx)
+        self.near = torch.ones(b, v).to(self.device) * 0.5
+        self.far = torch.ones(b, v).to(self.device) * 160
+        
+        gs_grd = F.interpolate(grd, (grd_res, grd_res*2), mode='bilinear', align_corners=True).unsqueeze(1)
+        gs_pers_imgs = F.interpolate(pers_imgs.view(b*v, c, h, w), (grd_res, grd_res), mode='bilinear', align_corners=True).view(b, v, c, grd_res, grd_res)
+        depth_img = F.interpolate(depth_img, (grd_res, grd_res*2), mode='bilinear', align_corners=True)
         grd_gaussian = self.gaussian_encoder(
-            gs_pers_imgs,
+            gs_grd, 
             None, 
-            camera_k, 
-            extrinsics, 
-            self.near,
-            self.far, 
+            None, 
+            camera_k[:, :1, :, :], 
+            torch.eye(4,4).unsqueeze(0).unsqueeze(0).to(self.device),
+            self.near[:, :1],
+            self.far[:, :1],
+            depth_img,
             False,
         )
-
-        # grd_gaussian = self.gaussian_encoder(
-        #     pers_imgs,
-        #     None, 
-        #     camera_k, 
-        #     extrinsics, 
-        #     self.near,
-        #     self.far, 
-        #     False,
-        # )
-
+        
         decoder_grd = self.grd_decoder(
             grd_gaussian,     # Sample from variational Gaussians
             extrinsics,
@@ -105,23 +148,23 @@ class ModelVIGOR(nn.Module):
             self.near,
             self.far,
             (grd_res,grd_res)
-            # (160 - start_height, 320),
         )
         grd_color = decoder_grd.color
         test_img = to_pil_image(grd_color[0,2].clip(min=0, max=1))
         test_img.save(f'grd_vigor_20face_{grd_res}.png')
         test_img = to_pil_image(pers_imgs[0,2].clip(min=0, max=1))
         test_img.save(f'real_vigor_20face_{grd_res}.png')
-        heading = torch.zeros([sat.shape[0], 1], dtype=torch.float32, requires_grad=False, device=sat.device)
 
+        heading = torch.ones([sat.shape[0], 1], device=sat.device) * 90
+        rot_range = 1
+        grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = render_projections(grd_gaussian, (128,128), heading=heading, rot_range=rot_range)
+        test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
+        test_img.save(f'sat_vigor_20face_{grd_res}.png')
+        
         # xyz_coords = equirectangular_to_xyz(320, 160, start_height=start_height)
         # points = torch.tensor(xyz_coords, dtype=torch.float32, requires_grad=False, device=sat.device).unsqueeze(0).repeat(sat.shape[0], 1, 1, 1)
         # points = points * decoder_grd.depth.unsqueeze(-1)
-        gs_depth_imgs = F.interpolate(depth_imgs.view(b*v, 1, h, w), (grd_res, grd_res), mode='bilinear', align_corners=True).view(b, v, grd_res, grd_res)
-
-        grd2sat_gaussian_color2, _ = render_projections(grd_gaussian, (256,256), heading=heading, look_axis=2)
-        test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
-        test_img.save(f'sat_vigor_20face_{grd_res}.png')
+        gs_depth_imgs = depth_imgs.squeeze(2)
         rgb_mse_loss = F.mse_loss(decoder_grd.color, gs_pers_imgs, reduction='mean')
         depth_l1_loss = F.l1_loss(decoder_grd.depth, gs_depth_imgs, reduction='mean')
         if self.global_step >= raw_Lpips_step:
@@ -228,15 +271,50 @@ class ModelVIGOR(nn.Module):
         gs_pers_imgs = F.interpolate(pers_imgs.view(b*v, c, h, w), (self.grd_res, self.grd_res), mode='bilinear', align_corners=True).view(b, v, c, self.grd_res, self.grd_res)
         
         # sat_feat_dict, sat_conf_dict = self.SatFeatureNet(sat)
-        # grd_feat_dict, grd_conf_dict = self.GrdFeatureNet(grd)
+        # grd_feat_dict, grd_conf_dict = self.GrdFeatureNet(pers_imgs.view(b*v, c, h, w))
 
-        sat_feat_dict, sat_conf_dict = self.FeatureForT(sat)
-        grd_feat_dict, grd_conf_dict = self.FeatureForT(pers_imgs.view(b*v, c, h, w))
+        with torch.no_grad():
+            # dino
+            sat_feat = self.dino_feat(sat)
+            grd_feat = self.dino_feat(pers_imgs.view(b*v, c, h, w))
+            if isinstance(sat_feat, (tuple, list)):
+                sat_feats = [_f.detach() for _f in sat_feat]
+            if isinstance(grd_feat, (tuple, list)):
+                grd_feats = [_f.detach() for _f in grd_feat]
+        
+        # TODO: use two dpt and upsample grd_feat
+        # dpt
+        sat_feat, sat_conf = self.dpt(sat_feats)
+        grd_feat, grd_conf = self.dpt(grd_feats)
+
+        sat_feat_dict = {}
+        sat_conf_dict = {}
+        grd_feat_dict = {}
+        grd_conf_dict = {}
+
+        sat_feat_dict[self.level] = sat_feat
+        sat_conf_dict[self.level] = sat_conf
+        grd_feat_dict[self.level] = grd_feat
+        grd_conf_dict[self.level] = grd_conf
+        # dpt over
+
+        # sat_feat_dict, sat_conf_dict = self.FeatureForT(sat)
+        # grd_feat_dict, grd_conf_dict = self.FeatureForT(pers_imgs.view(b*v, c, h, w))
+        
+
+
         if self.grd_res == 80:
             grd_feat = F.interpolate(grd_feat_dict[self.level], scale_factor=2)
             pers_feat = grd_feat.view(b, v, -1, self.grd_res, self.grd_res)
             grd_conf = F.interpolate(grd_conf_dict[self.level], scale_factor=2)
-            pers_feat = grd_conf.view(b, v, -1, self.grd_res, self.grd_res)
+            pers_conf = grd_conf.view(b, v, -1, self.grd_res, self.grd_res)
+            # pers_feat = grd_feat_dict[self.level].view(b, v, -1, self.grd_res, self.grd_res)
+            # pers_conf = grd_conf_dict[self.level].view(b, v, -1, self.grd_res, self.grd_res)
+        elif self.grd_res == 160:
+            grd_feat = F.interpolate(grd_feat_dict[self.level], scale_factor=4)
+            pers_feat = grd_feat.view(b, v, -1, self.grd_res, self.grd_res)
+            grd_conf = F.interpolate(grd_conf_dict[self.level], scale_factor=4)
+            pers_conf = grd_conf.view(b, v, -1, self.grd_res, self.grd_res)
         else:
             pers_feat = grd_feat_dict[self.level].view(b, v, -1, self.grd_res, self.grd_res)
             pers_conf = grd_conf_dict[self.level].view(b, v, -1, self.grd_res, self.grd_res)
@@ -279,8 +357,6 @@ class ModelVIGOR(nn.Module):
         # test_img.save(f'ori_grd_vigor_s3_20face_{self.grd_res}.png')
         # test_img = to_pil_image(pers_imgs[idx,2].clip(min=0, max=1))
         # test_img.save(f'real_vigor_s3_20face_{self.grd_res}.png')
-        # test_img = to_pil_image(self.sat[idx].clip(min=0, max=1))
-        # test_img.save(f'sat_vigor_s3_20face_{self.grd_res}.png')
         # test_img = to_pil_image(grd_feat_proj[idx].clip(min=0, max=1))
         # test_img.save(f'ori_vigor_s3_20face_{self.grd_res}.png')
 
@@ -291,14 +367,16 @@ class ModelVIGOR(nn.Module):
             heading = torch.ones_like(gt_rot.unsqueeze(-1), device=gt_rot.device) * 90 / self.args.rotation_range
             heading = heading + gt_rot.unsqueeze(-1)
             rot_range = self.args.rotation_range
-        grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = render_projections(grd_gaussian, (128,128), heading=heading, rot_range=rot_range)
+        grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = render_projections(grd_gaussian, (128,128), heading=heading, rot_range=rot_range, mode='vigor')
         grd2sat_feat2 = grd2sat_gaussian_feat2
         grd2sat_conf2 = grd2sat_gaussian_conf2
 
-        # # vis
-        # test_img = to_pil_image(grd2sat_gaussian_color2[idx].clip(min=0, max=1))
-        # test_img.save(f'g2s_vigor_s3_20face_{self.grd_res}.png')
-        # # vis
+        # vis
+        # test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
+        # test_img.save(f'g2s_vigor_s3_20face_dpt_{self.grd_res}.png')
+        # test_img = to_pil_image(self.sat[0].clip(min=0, max=1))
+        # test_img.save(f'sat_vigor_s3_20face_{self.grd_res}.png')
+        # vis
         # single_features_to_RGB(grd2sat_feat2, idx)
         # sat_features_to_RGB(sat_feat_dict[self.level], grd2sat_feat2, idx)
         # sat_features_to_RGB_2D_PCA(sat_feat_dict[self.level], grd2sat_feat2, idx)
@@ -321,9 +399,9 @@ class ModelVIGOR(nn.Module):
             sat_uncer_dict[level] = None
         return sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict
     
-    def forward(self, sat, grd, meter_per_pixel, gt_rot=None, gt_shift_u=None, gt_shift_v=None, stage=None, loop=None, save_dir=None):
+    def forward(self, sat, grd, depth_imgs, meter_per_pixel, gt_rot=None, gt_shift_u=None, gt_shift_v=None, stage=None, loop=None, save_dir=None):
         if self.args.Supervision == 'Gaussian':
-            loss = self.forwardGS(sat, grd, meter_per_pixel, gt_rot, loop, save_dir)
+            loss = self.forwardGS(sat, grd, depth_imgs)
             return loss
         else:
             return self.forward2DoF(sat, grd, gt_rot, meter_per_pixel)
