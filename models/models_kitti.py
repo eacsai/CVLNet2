@@ -24,7 +24,7 @@ import cv2
 from PIL import Image
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import colors
-from visualize import single_features_to_RGB, sat_features_to_RGB
+from visualize import single_features_to_RGB, sat_features_to_RGB, visualize_1d_pca, sat_features_to_RGB_2D_PCA
 from gaussian.encoder import GaussianEncoder
 from gaussian.decoder import GrdDecoder
 from gaussian.encoder_feat import GaussianFeatEncoder
@@ -33,10 +33,21 @@ from models.dino_fit import DINO
 from models.VGGW import L2_norm
 from models.bev_net import BEVNet
 from models.dpt_single import DPT
+import cv2
+import matplotlib.cm as cm
 
 to_pil_image = transforms.ToPILImage()
 EPS = utils.EPS
 
+def onlyDepth(depth, save_name):
+    cmap = cm.Spectral
+    depth = depth[0]
+    depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
+    depth = depth.cpu().detach().numpy()
+    depth = depth.astype(np.uint8)
+    
+    c_depth = (cmap(depth)[:, :, :3] * 255)[:, :, ::-1].astype(np.uint8)
+    cv2.imwrite(save_name, c_depth)
 
 class Model(nn.Module):
     def __init__(self, args, device=None):  # device='cuda:0',
@@ -58,15 +69,9 @@ class Model(nn.Module):
 
         self.dino_feat = DINO()
         self.dpt = DPT(self.dino_feat.feat_dim)
-
         # self.dino_feat = DinoFeat()
         convert_to_buffer(self.lpips, persistent=False)
 
-        if self.args.proj == 'CrossAttn':
-            self.Dec4 = Decoder4(self.channels[0])
-            self.Dec2 = Decoder2(self.channels[0:2])
-            self.CVattn = CrossViewAttention(blocks=2, dim=256, heads=4, dim_head=16, qkv_bias=False)
-        # self.gaussian_proj = FeatureHead(64)
         if self.args.share:
             self.FeatureForT = VGGUnet(self.level, self.gs_channels)
         else:
@@ -82,7 +87,6 @@ class Model(nn.Module):
 
         self.coe_R = nn.Parameter(torch.tensor(-5., dtype=torch.float32), requires_grad=True)
         self.coe_T = nn.Parameter(torch.tensor(-3., dtype=torch.float32), requires_grad=True)
-
 
         self.masks = {}
         for level in range(4):
@@ -133,7 +137,7 @@ class Model(nn.Module):
         )
         return self.gaussians
     
-    def grd_pure_feat_projection(self, grd_img_left, grd_depth, left_camera_k, deterministic=False):
+    def grd_pure_feat_projection(self, grd_img_left, grd_feat, grd_conf, grd_depth, left_camera_k, deterministic=False):
         # initial
         self.camera_k = left_camera_k.clone()
         self.camera_k[:, :1, :] = self.camera_k[:, :1, :] / grd_depth.shape[2]  # original size input into feature get network/ output of feature get network
@@ -143,6 +147,8 @@ class Model(nn.Module):
         # Encode the context images.
         self.gaussians = self.feat_gaussian_encoder(
             self.grd_img_left,
+            grd_feat,
+            grd_conf,
             self.camera_k, 
             self.extrinsics, 
             self.near,
@@ -265,6 +271,84 @@ class Model(nn.Module):
 
         return shift_u_new, shift_v_new, heading_new
 
+    def forward_project(self, image_tensor, camera_k, depth, meter_per_pixel, sat_width=512, ori_grdH=256, ori_grdW=1024):
+        origin_image_tensor = image_tensor.clone()
+        B, C, grd_H, grd_W = image_tensor.shape
+        camera_k = camera_k.clone()
+        camera_k[:, :1, :] = camera_k[:, :1,
+                                :] * grd_W / ori_grdW  # original size input into feature get network/ output of feature get network
+        camera_k[:, 1:2, :] = camera_k[:, 1:2, :] * grd_H / ori_grdH
+        # meter_per_pixel = 1
+        image_tensor = image_tensor.permute(0,2,3,1).contiguous().view(B*grd_H*grd_W, -1)
+
+        camera_k_inv = torch.inverse(camera_k)  # [B, 3, 3]
+
+        v, u = torch.meshgrid(torch.arange(0, grd_H, dtype=torch.float32),
+                                torch.arange(0, grd_W, dtype=torch.float32))
+        uv1 = torch.stack([u, v, torch.ones_like(u)], dim=-1).unsqueeze(dim=0).to('cuda')
+        xyz_w = torch.sum(camera_k_inv[:, None, None, :, :] * uv1[:, :, :, None, :], dim=-1)  # [1, grd_H, grd_W, 3]
+
+
+        depth = depth.unsqueeze(-1)
+        depth = F.interpolate(depth.permute(0,3,1,2), size=(grd_H, grd_W), mode='bilinear', align_corners=False).permute(0,2,3,1)
+        # xyz_grd = xyz_w * depth / meter_per_pixel
+        xyz_grd = xyz_w * depth * 1.2
+
+        # xyz_grd = xyz_grd.long()
+        # xyz_grd[:,:,:,0:1] += sat_width // 2
+        # xyz_grd[:,:,:,2:3] += sat_width // 2
+        # B, H, W, C = xyz_grd.shape
+        xyz_grd = xyz_grd.view(B*grd_H*grd_W, -1)
+        xyz_grd[:, 0] = xyz_grd[:, 0] / meter_per_pixel
+        xyz_grd[:, 2] = xyz_grd[:, 2] / meter_per_pixel
+        xyz_grd[:, 0] = xyz_grd[:, 0].long()
+        xyz_grd[:, 2] = xyz_grd[:, 2].long()
+
+        batch_ix = torch.cat([torch.full([grd_H*grd_W, 1], ix, device=image_tensor.device) for ix in range(B)], dim=0)
+        xyz_grd = torch.cat([xyz_grd, batch_ix], dim=-1)
+
+        kept = (xyz_grd[:,0] >= -(sat_width // 2)) & (xyz_grd[:,0] <= (sat_width // 2) - 1) & (xyz_grd[:,2] >= -(sat_width // 2)) & (xyz_grd[:,2] <= (sat_width // 2) - 1)
+
+        xyz_grd_kept = xyz_grd[kept]
+        image_tensor_kept = image_tensor[kept]
+
+        max_height = xyz_grd_kept[:,1].max()
+
+        xyz_grd_kept[:,0] = xyz_grd_kept[:,0] + sat_width // 2
+        xyz_grd_kept[:,1] = max_height - xyz_grd_kept[:,1]
+        xyz_grd_kept[:,2] = xyz_grd_kept[:,2] + sat_width // 2
+        xyz_grd_kept = xyz_grd_kept[:,[2,0,1,3]]
+        rank = torch.stack((xyz_grd_kept[:, 0] * sat_width * B + (xyz_grd_kept[:, 1] + 1) * B + xyz_grd_kept[:, 3], xyz_grd_kept[:, 2]), dim=1)
+        sorts_second = torch.argsort(rank[:, 1])
+        xyz_grd_kept = xyz_grd_kept[sorts_second]
+        image_tensor_kept = image_tensor_kept[sorts_second]
+        sorted_rank = rank[sorts_second]
+        sorts_first = torch.argsort(sorted_rank[:, 0], stable=True)
+        xyz_grd_kept = xyz_grd_kept[sorts_first]
+        image_tensor_kept = image_tensor_kept[sorts_first]
+        sorted_rank = sorted_rank[sorts_first]
+        kept = torch.ones_like(sorted_rank[:, 0])
+        kept[:-1] = sorted_rank[:, 0][:-1] != sorted_rank[:, 0][1:]
+        res_xyz = xyz_grd_kept[kept.bool()]
+        res_image = image_tensor_kept[kept.bool()]
+        
+        # grd_image_index = torch.cat((-res_xyz[:,1:2] + grd_image_width - 1,-res_xyz[:,0:1] + grd_image_height - 1), dim=-1)
+        final = torch.zeros(B,sat_width,sat_width,C).to(torch.float32).to('cuda')
+        sat_height = torch.zeros(B,sat_width,sat_width,1).to(torch.float32).to('cuda')
+        final[res_xyz[:,3].long(),res_xyz[:,1].long(),res_xyz[:,0].long(),:] = res_image
+
+        res_xyz[:,2][res_xyz[:,2] < 1e-1] = 1e-1
+        sat_height[res_xyz[:,3].long(),res_xyz[:,1].long(),res_xyz[:,0].long(),:] = res_xyz[:,2].unsqueeze(-1)
+        sat_height = sat_height.permute(0,3,1,2)
+        # img_num = 0
+        # project_grd_img = to_pil_image(final[img_num].permute(2, 0, 1))
+        # project_grd_img.save('sat_feat.png')
+
+        # project_grd_img = to_pil_image(origin_image_tensor[img_num])
+        # project_grd_img.save('grd_feat.png')
+
+        return final.permute(0,3,1,2)
+
     def inplane_uv(self, ori_shift_u, ori_shift_v, ori_heading, satmap_sidelength):
         meter_per_pixel = utils.get_meter_per_pixel()
         meter_per_pixel *= utils.get_process_satmap_sidelength() / satmap_sidelength
@@ -337,7 +421,7 @@ class Model(nn.Module):
                 sat_feat = sat_feat_dict[level]
                 grd_feat = grd_feat_dict[level]
 
-                if self.args.stage == 4:
+                if self.args.stage == 4 or self.args.stage == 3:
                     A = sat_feat.shape[-1]
                     overhead_feat, _, _, _ = self.project_grd_to_map(
                         grd_feat, None, shift_u, shift_v, heading, left_camera_k, A, ori_grdH, ori_grdW)
@@ -548,14 +632,19 @@ class Model(nn.Module):
                 self.camera_k,
                 self.near,
                 self.far,
-                (128, 512),
+                (64, 256),
             )
 
             grd2sat_gaussian_color, _, _ = render_projections(grd_gaussian, (512,512))
             test_img = to_pil_image(grd2sat_gaussian_color[0].clip(min=0, max=1))
             test_img.save(f'sat_weak_ori_128.png')
+            test_img = to_pil_image(self.grd_img_left[0,0].clip(min=0, max=1))
+            test_img.save(f'grd_ori_128.png')
             test_img = to_pil_image(decoder_grd.color[0,0].clip(min=0, max=1))
-            test_img.save(f'grd_weak_ori_128.png')            
+            test_img.save(f'grd_weak_ori_128.png')
+            grd_depth = F.interpolate(grd_depth.unsqueeze(1), (64, 256), mode='bilinear', align_corners=True).squeeze(1)
+            onlyDepth(grd_depth, 'grd_depth_ori_128.png')
+            onlyDepth(decoder_grd.depth[0], 'grd_depth_128.png')
             with torch.no_grad():
                 if self.args.rotation_range > 0:
                     sat_feat_dict, sat_conf_dict = self.SatFeatureNet(sat_map)
@@ -605,41 +694,55 @@ class Model(nn.Module):
 
             self.grd_img_left = self.grd_img_left.unsqueeze(1)
             
-            grd_gaussian = self.grd_feat_projection(self.grd_img_left, grd_feat_dict_forT[level].unsqueeze(1), grd_conf_dict_forT[level].unsqueeze(1), grd_depth, left_camera_k)
+            grd_gaussian = self.grd_feat_projection(
+                self.grd_img_left, 
+                grd_feat_dict_forT[level].unsqueeze(1), 
+                grd_conf_dict_forT[level].unsqueeze(1), 
+                grd_depth, 
+                left_camera_k
+            )
             
             render_loss = torch.tensor(0.0).to(self.grd_img_left.device)
             # ----------------- Rotation Stage ---------------------------
             with torch.no_grad():
-                grd2sat_gaussian_color1, grd2sat_gaussian_feat1, grd2sat_gaussian_conf1 = render_projections(grd_gaussian, (512,512))
-                
-                sat_feat_dict_forR, sat_uncer_dict_forR = self.SatFeatureNet(sat_map)
-                grd_feat_dict_forR, grd_conf_dict_forR = self.SatFeatureNet(grd2sat_gaussian_color1)
-
                 if self.args.rotation_range > 0:
+                    # grd2sat_gaussian_color1, grd2sat_gaussian_feat1, grd2sat_gaussian_conf1 = render_projections(grd_gaussian, (512,512))
+                
+                    sat_feat_dict_forR, sat_uncer_dict_forR = self.SatFeatureNet(sat_map)
+                    grd_feat_dict_forR, grd_conf_dict_forR = self.SatFeatureNet(grd_img_left)
                     shift_lats, shift_lons, thetas = self.NeuralOptimizer(grd_feat_dict_forR, sat_feat_dict_forR, B,
                                                                           left_camera_k, ori_grdH, ori_grdW)
                     heading = thetas[:, -1, -1:].detach()
                 else:
                     heading = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
+                    thetas = heading.unsqueeze(1)
                     shift_lats = None
                     shift_lons = None
 
             # ----------------- Translation Stage ---------------------------
 
-            grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = render_projections(grd_gaussian, (128,128), heading=heading)
+            grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = render_projections(grd_gaussian, (128,128), heading=heading, rot_range=self.args.rotation_range)
             test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
             test_img.save(f'sat_weak_maskfov3.png')
             # single_features_to_RGB(grd2sat_gaussian_feat2)
             # grd_origin, _, _, _ = self.project_grd_to_map(
-            #         grd_img_left, None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH,
+            #         grd_feat, None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH,
             #         ori_grdW,
             #         require_jac=False)
+            # sat_features_to_RGB_2D_PCA(grd2sat_gaussian_feat2, grd_origin)
+
+            
             # test_img = to_pil_image(grd_origin[0].clip(min=0, max=1))
             # test_img.save(f'grd_origin.png')
-            # test_img = to_pil_image(self.sat_map[0].clip(min=0, max=1))
-            # test_img.save(f'origin_sat.png')
+            test_img = to_pil_image(grd_img_left[0].clip(min=0, max=1))
+            test_img.save(f'grd.png')
+            test_img = to_pil_image(self.sat_map[0].clip(min=0, max=1))
+            test_img.save(f'origin_sat.png')
 
             # sat_feat = sat_feat_dict_forT[level]
+            # grd2sat_forward = self.forward_project( grd_img_left, left_camera_k, grd_depth, self.meters_per_pixel[1], 128, ori_grdH, ori_grdW)
+            # test_img = to_pil_image(grd2sat_forward[0].clip(min=0, max=1))
+            # test_img.save(f'forward.png')            
 
             mask_dict = {}
             mask = (grd2sat_gaussian_feat2 != 0).any(dim=1, keepdim=True).permute(0, 2, 3, 1)
@@ -697,7 +800,13 @@ class Model(nn.Module):
             # dpt over
 
             self.grd_img_left = self.grd_img_left.unsqueeze(1)
-            grd_gaussian = self.grd_pure_feat_projection(self.grd_img_left, grd_depth, left_camera_k)
+            grd_gaussian = self.grd_pure_feat_projection(
+                self.grd_img_left, 
+                grd_feat.unsqueeze(1),
+                grd_conf.unsqueeze(1),
+                grd_depth, 
+                left_camera_k
+            )
             
             decoder_grd = self.grd_decoder.forward(
                 grd_gaussian,     # Sample from variational Gaussians
@@ -741,7 +850,7 @@ class Model(nn.Module):
 
             _, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = render_projections(grd_gaussian, (128,128), heading=heading)
 
-            single_features_to_RGB(grd2sat_gaussian_feat2, 'sat_weak_maskfov4_feat.png')
+            # single_features_to_RGB(grd2sat_gaussian_feat2, img_name = 'sat_weak_maskfov4_feat.png')
             # grd_origin, _, _, _ = self.project_grd_to_map(
             #         grd_img_left, None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH,
             #         ori_grdW,

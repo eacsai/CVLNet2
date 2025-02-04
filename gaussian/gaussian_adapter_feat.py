@@ -62,20 +62,16 @@ class GaussianAdapter(nn.Module):
         depths: Float[Tensor, "*#batch"],
         opacities: Float[Tensor, "*#batch"],
         raw_gaussians: Float[Tensor, "*#batch _"],
+        grd_feat: Float[Tensor, "batch channels height width"],
+        grd_conf: Float[Tensor, "batch channels height width"],        
         image_shape: tuple[int, int],
         eps: float = 1e-8,
     ) -> Gaussians:
         device = extrinsics.device
-        h,w = image_shape
-        b,v = raw_gaussians.shape[:2]
-        scales, rotations, grd_feat \
-            = raw_gaussians.split((3, 4, 32), dim=-1)
-        img_feat = rearrange(grd_feat.squeeze(1).squeeze(-2), "batch (height width) channels -> batch channels height width", height=h, width=w)
-        img_feat = L2_norm(img_feat)
-        grd_conf = nn.Sigmoid()(-self.conf(img_feat))
-        
-        features = rearrange(img_feat.unsqueeze(1), "batch view channels height width -> batch view (height width) channels").unsqueeze(-2)
-        confidence = rearrange(grd_conf.unsqueeze(1), "batch view channels height width -> batch view (height width) channels").unsqueeze(-2)
+        scales, rotations \
+            = raw_gaussians.split((3, 4), dim=-1)
+        features = rearrange(grd_feat, "batch view channels height width -> batch view (height width) channels").unsqueeze(-2)
+        confidence = rearrange(grd_conf, "batch view channels height width -> batch view (height width) channels").unsqueeze(-2)
 
         # Map scale features to valid scale range.
         scale_min = 0.5
@@ -103,8 +99,6 @@ class GaussianAdapter(nn.Module):
             means=means,
             covariances=covariances,
             opacities=opacities,
-            # Note: These aren't yet rotated into world space, but they're only used for
-            # exporting Gaussians to ply files. This needs to be fixed...
             features=features,
             confidence=confidence,
             scales=scales,

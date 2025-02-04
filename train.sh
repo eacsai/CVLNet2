@@ -48,15 +48,26 @@ python "./train_KITTI_weak.py" \
 
   #6.25e-5 cos
   python "./train_KITTI_weak.py" \
-    --rotation_range 10 \
+    --rotation_range 40 \
     --stage 3 \
     --share 1 \
     --level 1 \
     --ConfGrd 1 \
     --contrastive_coe 1 \
-    --name "feat32_no_GPS" \
+    --name "feat32_GPS_ori_range40" \
     --batch_size 12 \
-    --epochs 10
+    --epochs 5
+
+  python "./train_KITTI_weak.py" \
+    --rotation_range 40 \
+    --stage 3 \
+    --share 1 \
+    --level 1 \
+    --ConfGrd 1 \
+    --contrastive_coe 1 \
+    --name "feat32_no_GPS_ori_range40" \
+    --batch_size 12 \
+    --epochs 5
 
 python "./train_KITTI_weak.py" \
   --rotation_range 10 \

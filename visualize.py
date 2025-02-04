@@ -4,6 +4,7 @@ from PIL import Image
 import os
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 
 def reshape_normalize(x):
     '''
@@ -276,3 +277,57 @@ def grd_features_to_RGB_2D_PCA_concat(grd_features, b_idx=0):
     out_filename = f'grd_feat_2dpca_b{b_idx}_concat.png'
     concat_img.save(out_filename)
     print(f"Saved concatenated image: {out_filename}")
+
+
+def visualize_1d_pca(tensor1, tensor2, output_filename="pca_visualization.png"):
+    """
+    使用1D PCA降维并可视化两个[1, 32, 128, 128]的tensor的特征，并将结果保存为.png文件。
+    为可视化结果添加颜色映射，并绘制在同一张图上。
+
+    参数:
+    tensor1 (torch.Tensor): 第一个输入的tensor，形状为 [1, 32, 128, 128]
+    tensor2 (torch.Tensor): 第二个输入的tensor，形状为 [1, 32, 128, 128]
+    output_filename (str): 输出图像的文件名，默认为 'pca_visualization.png'
+    """
+    # 确保输入是四维tensor
+    assert tensor1.ndimension() == 4 and tensor1.shape[0] == 1, "输入tensor1必须是[1, 32, 128, 128]的四维tensor"
+    assert tensor2.ndimension() == 4 and tensor2.shape[0] == 1, "输入tensor2必须是[1, 32, 128, 128]的四维tensor"
+
+    # 将两个tensor展平为[32, 128*128]
+    tensor1_flat = tensor1.view(32, -1)  # 32x(128*128)
+    tensor2_flat = tensor2.view(32, -1)  # 32x(128*128)
+
+    # 转换为numpy数组，便于PCA操作
+    tensor1_flat_np = tensor1_flat.cpu().detach().numpy()
+    tensor2_flat_np = tensor2_flat.cpu().detach().numpy()
+
+    # 使用sklearn中的PCA进行1D降维
+    pca = PCA(n_components=1)
+    tensor1_pca = pca.fit_transform(tensor1_flat_np)
+    tensor2_pca = pca.fit_transform(tensor2_flat_np)
+
+    # 创建一个渐变色的颜色映射
+    norm = plt.Normalize(vmin=min(np.min(tensor1_pca), np.min(tensor2_pca)),
+                         vmax=max(np.max(tensor1_pca), np.max(tensor2_pca)))
+    cmap = cm.viridis  # 你可以选择不同的colormap，如 'viridis', 'plasma', 'inferno', 'magma' 等
+    
+    # 使用色彩映射给PCA结果着色
+    plt.figure(figsize=(10, 6))
+    plt.scatter(np.arange(len(tensor1_pca)), tensor1_pca, c=tensor1_pca, cmap=cmap, norm=norm, label="Tensor 1", alpha=0.7)
+    plt.scatter(np.arange(len(tensor2_pca)), tensor2_pca, c=tensor2_pca, cmap=cmap, norm=norm, label="Tensor 2", alpha=0.7)
+    
+    # 添加标题和标签
+    plt.title("1D PCA Visualization with Colormap")
+    plt.xlabel("Channels")
+    plt.ylabel("PCA Component Value")
+
+    # 添加颜色条
+    plt.colorbar(plt.cm.ScalarMappable(cmap=cmap, norm=norm), label='PCA Component Value')
+
+    # 添加图例
+    plt.legend()
+
+    # 保存图像为.png文件
+    plt.savefig(output_filename, format='png')
+    print(f"图像已保存为 {output_filename}")
+    plt.close()

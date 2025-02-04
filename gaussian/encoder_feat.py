@@ -42,7 +42,7 @@ class GaussianFeatEncoder(nn.Module):
             nn.ReLU(),
             nn.Linear(
                 128,
-                41,
+                9,
             ),
         )
         # self.to_gaussians_feat = nn.Sequential(
@@ -69,6 +69,8 @@ class GaussianFeatEncoder(nn.Module):
     def forward(
         self,
         img: Float[Tensor, "batch view channels height width"],
+        grd_feat: Float[Tensor, "batch view channels height width"],
+        grd_conf: Float[Tensor, "batch view channels height width"],
         camera_k: Float[Tensor, "batch view 3 3"],
         extrinsics: Float[Tensor, "batch view 4 4"],
         near: Float[Tensor, "batch view"],
@@ -114,6 +116,8 @@ class GaussianFeatEncoder(nn.Module):
             depths,
             self.map_pdf_to_opacity(densities) / gpp,
             gaussians[..., 2:],
+            grd_feat,
+            grd_conf,
             (h, w),
         )
 

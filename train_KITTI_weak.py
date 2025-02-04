@@ -1,7 +1,7 @@
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
 import torch
 import torch.nn as nn
@@ -243,62 +243,105 @@ def test1(net_test, args, save_path, epoch):
                                                         net_test.meters_per_pixel,
                                                         gt_heading=gt_heading,
                                                         masks=mask_dict)
+            
+            pred_orien = thetas[:, -1, -1]
+            pred_angle = pred_orien.data.cpu().numpy() * args.rotation_range / 180 * np.pi
+
             # gt heading here is just to decompose the pred_u & pred_v in the lateral and longitudinal direction
             # for evaluation purpose only
 
-            pred_orien = thetas[:, -1, -1]
-
             if args.visualize:
 
-                visualize_dir = os.path.join(save_path, 'visualization')
-                if not os.path.exists(visualize_dir):
-                    os.makedirs(visualize_dir)
-
-                pred_u1 = 512 / 2 - 0.5 + pred_u.data.cpu().numpy()
-                pred_v1 = 512 / 2 - 0.5 + pred_v.data.cpu().numpy()
-                pred_angle = pred_orien.data.cpu().numpy() * args.rotation_range / 180 * np.pi
-
+                # 示例处理
+                idx = 0
                 cos = torch.cos(gt_heading[:, 0] * args.rotation_range / 180 * np.pi)
                 sin = torch.sin(gt_heading[:, 0] * args.rotation_range / 180 * np.pi)
                 gt_delta_x = - gt_shift_u[:, 0] * args.shift_range_lon
                 gt_delta_y = - gt_shift_v[:, 0] * args.shift_range_lat
                 gt_delta_x_rot = - gt_delta_x * cos + gt_delta_y * sin
                 gt_delta_y_rot = gt_delta_x * sin + gt_delta_y * cos
-                gt_u1 = torch.round(512 / 2 - 0.5 + gt_delta_x_rot / net_test.meters_per_pixel[3]).data.cpu().numpy()
-                gt_v1 = torch.round(512 / 2 - 0.5 + gt_delta_y_rot / net_test.meters_per_pixel[3]).data.cpu().numpy()
+                gt_u1 = torch.round(gt_delta_x_rot / net_test.meters_per_pixel[3]).data.cpu().numpy()
+                gt_v1 = torch.round(gt_delta_y_rot / net_test.meters_per_pixel[3]).data.cpu().numpy()
                 gt_angle = gt_heading[:, 0].data.cpu().numpy() * args.rotation_range / 180 * np.pi
 
-                for b_idx in range(sat_map.shape[0]):
-                    img = sat_map[b_idx].permute(1, 2, 0).data.cpu().numpy()[126: -126, 126:-126, :]
-                    prob_map = np.asarray(Image.fromarray(corr[b_idx].data.cpu().numpy()).resize((corr.shape[2]*2, corr.shape[1]*2)))[25:285, 25:285]
-                    overlay = show_cam_on_image(img, prob_map, False, cv2.COLORMAP_HSV)
+                prob_map = np.asarray(Image.fromarray(corr[idx].data.cpu().numpy()).resize((corr.shape[2]*4, corr.shape[1]*4)))
+                img = sat_map[idx].permute(1, 2, 0).data.cpu().numpy()[(512 - prob_map.shape[0]) // 2: -(512 - prob_map.shape[0]) // 2,
+                                                                (512 - corr.shape[2]*4) // 2: -(512 - corr.shape[2]*4) // 2, :]
+                overlay = show_cam_on_image(img, prob_map, False, cv2.COLORMAP_HSV)
 
-                    fig, ax = plt.subplots()
-                    ax.imshow(overlay)
-                    idx = 0
-                    A = 512
-                    init = ax.scatter(A / 2, A / 2, color='r', linewidth=1, edgecolor="w", s=60, zorder=2)
-                    pred = ax.scatter(pred_u1[idx], pred_v1[idx], linewidth=1, edgecolor="w", color='y', marker="^",
-                                      s=60, zorder=2)
-                    gt = ax.scatter(gt_u1[idx], gt_v1[idx], color='g', linewidth=1, edgecolor="w", marker="*", s=110,
-                                    zorder=2)
+                # 创建绘图
+                fig, ax = plt.subplots()
+                # plt.subplots_adjust(top=0.6)  # 留白空间可以根据需要调整，top的值控制上方空白的大小
 
-                    ax.legend((init, pred, gt), ('Init', 'Pred', 'GT'), markerscale=1.2, frameon=False, fontsize=10,
-                              edgecolor="w", labelcolor='w', shadow=True, facecolor='b', loc=(0.548, 0.589))
-                    ax.quiver(A / 2, A / 2, 1, 1, angles=0, color='r', zorder=2)
-                    ax.quiver(pred_u1[idx], pred_v1[idx],
-                              np.cos(pred_angle),
-                              np.sin(pred_angle),
-                              color='y', zorder=2)
-                    ax.quiver(gt_u1[idx], gt_v1[idx],
-                              np.cos(gt_angle),
-                              np.sin(gt_angle),
-                              color='g', zorder=2)
-                    ax.axis('off')
-                    plt.savefig(os.path.join(visualize_dir, 'pose_' + str( i*args.batch_size + b_idx) + '.png'),
-                                transparent=True, dpi=150, bbox_inches='tight', pad_inches=-0.1)
-                    plt.close()
-                    print('done')
+                A = overlay.shape[0]
+                
+                # # 1) 用不可见的方式画出热力图，本质是为了生成 colorbar
+                # im_for_cbar = ax.imshow(prob_map, cmap='hsv', alpha=0.0)  
+                # # 这里 alpha=0 让它不覆盖图像，但 Matplotlib 仍然知道它的数据范围
+
+                # # 2) 放置 colorbar（与上面的 im_for_cbar 关联）
+                # cbar = plt.colorbar(im_for_cbar, ax=ax)
+                # cbar.set_label("Activation / Heat", color='black')  # 可选：给 colorbar 命名
+                
+                # 显示图像
+                ax.imshow(overlay)
+                # im = ax.imshow(img)
+                # 绘制 scatter 点：初始化位置、预测位置、GT位置
+                # init = ax.scatter(162, 26, color='blue', linewidth=2, edgecolor="w", s=80, zorder=2, marker='D', alpha=0.8)
+                pred = ax.scatter(int(pred_u[idx]) + A / 2, int(pred_v[idx]) + A / 2, color='green', s=200, edgecolor='w', marker='o', alpha=0.8)
+                gt = ax.scatter(int(gt_u1[idx]) + A / 2 + 10, int(gt_v1[idx]) + A / 2 - 15, color='red', s=400, edgecolor='w', marker='$⚑$', alpha=0.8)
+
+                # 添加 legend，调整 legend 的位置到上方留白区域
+                # ax.legend(
+                #     (init, pred, gt),
+                #     ('Weekly', 'Ours', 'GT'),
+                #     markerscale=1.2,
+                #     frameon=False,
+                #     fontsize=12,
+                #     edgecolor="black",
+                #     labelcolor='black',
+                #     shadow=True,
+                #     facecolor='w',
+                #     loc='upper center',  # 让 legend 在上方居中
+                #     bbox_to_anchor=(0.5, 1.15),  # 设置 legend 位置，1.05 表示在图像上方
+                #     ncol=3
+                # )
+
+                ax.legend(
+                    (pred, gt),
+                    ('Ours', 'GT'),
+                    markerscale=1.2,
+                    frameon=False,
+                    fontsize=12,
+                    edgecolor="black",
+                    labelcolor='black',
+                    shadow=True,
+                    facecolor='w',
+                    loc='upper center',  # 让 legend 在上方居中
+                    bbox_to_anchor=(0.5, 1.12),  # 设置 legend 位置，1.05 表示在图像上方
+                    ncol=3
+                )
+
+                # 绘制 quiver 箭头
+                # ax.quiver(66, 186,
+                #         np.cos(pred_angle[idx]), np.sin(pred_angle[idx]),
+                #         color='w', scale=15, zorder=2)
+
+                # ax.quiver(int(pred_u[idx]) + A / 2, int(pred_v[idx]) + A / 2,
+                #         np.cos(pred_angle[idx]), np.sin(pred_angle[idx]),
+                #         color='w', scale=15, zorder=2)
+
+                # ax.quiver(int(gt_u1[idx]) + A / 2, int(gt_v1[idx]) + A / 2,
+                #         np.cos(gt_angle[idx]), np.sin(gt_angle[idx]),
+                #         color='w', scale=15, zorder=2)
+
+                # 添加颜色条
+                # plt.colorbar(im, ax=ax)
+
+                # 保存图像
+                plt.axis('off')  # 关闭坐标轴
+                plt.savefig('corr.png', bbox_inches='tight', pad_inches=0)
+                plt.close()
 
 
             pred_lons.append(pred_u.data.cpu().numpy())
@@ -625,6 +668,7 @@ def test2(net_test, args, save_path, epoch):
 
 def train(net, args, save_path, name_path):
     bestRankResult = 0.0
+    
     # optimizer = optim.Adam(net.parameters(), lr=base_lr)
     if args.stage == 0:
         if args.rotation_range == 0:
@@ -784,6 +828,8 @@ def train(net, args, save_path, name_path):
                 #         # 检查梯度张量中是否存在非零元素
                 #         if (param.grad != 0).any():
                 #             print(name)
+                # num_params = sum(p.numel() for p in net.dpt.parameters() if p.requires_grad)
+                # print(f"========Number of trainable parameters: {num_params}==========") 
                 if Loop % 10 == 9:  #
                     time_end = time.time()
                     current_lr = scheduler.get_last_lr()[0]
@@ -805,7 +851,7 @@ def train(net, args, save_path, name_path):
                                                                          net.meters_per_pixel,
                                                                          args.GPS_error)
 
-                loss = corr_loss + render_loss
+                loss = corr_loss * 10 + render_loss
 
                 R_err = torch.abs(thetas[:, -1, -1].reshape(-1) - gt_heading.reshape(-1)).mean() * args.rotation_range
 
@@ -996,11 +1042,10 @@ if __name__ == '__main__':
                                'model_2.pth'))
         
         elif (args.stage == 4) and args.rotation_range > 0:
-            
-            net.load_state_dict(torch.load(
-                os.path.join(name_path.replace('Stage4', 'Stage3').replace(args.proj, 'geo'), 'model_2.pth')), strict=False)
+            path = '/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage3/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32_dpt_best/model_2.pth'
+            net.load_state_dict(torch.load(path), strict=False)
             print("load pretrained model from Stage3:")
-            print(os.path.join(name_path.replace('Stage4', 'Stage3'), 'model_2.pth'))
+            print(path)
         
         if args.visualize:
             net.load_state_dict(torch.load(os.path.join(save_path, 'model_2.pth')), strict=False)

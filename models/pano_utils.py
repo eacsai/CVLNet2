@@ -236,6 +236,16 @@ def showDepth(depth, raw_image):
     combined_result = cv2.hconcat([raw_image, split_region, depth])
     cv2.imwrite(output_path, combined_result)
 
+def onlyDepth(depth):
+    cmap = cm.Spectral
+    depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
+    depth = depth.cpu().detach().numpy()
+    depth = depth.astype(np.uint8)
+    
+    depth = (cmap(depth)[:, :, :3] * 255)[:, :, ::-1].astype(np.uint8)
+    cv2.imwrite("depth_image.png", depth)
+    return depth
+
 if __name__ == "__main__":
     from pathlib import Path
 
