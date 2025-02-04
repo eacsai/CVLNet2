@@ -32,7 +32,7 @@ class BackboneResnet(Backbone[BackboneResnetCfg]):
 
         assert d_in == 3
         self.num_layers = 4
-        self.model = torch.hub.load("facebookresearch/dino:main", "dino_resnet50")
+        self.model = torch.hub.load("facebookresearch/dino:main", "dino_resnet50", trust_repo=True)
 
         # Set up projections
         self.projections = nn.ModuleDict({})

@@ -134,7 +134,9 @@
             "--ConfGrd", "1",
             "--level", "1",
             "--Supervision", "Gaussian",
-            "--area", "same"
+            "--area", "same",
+            "--name", "20face_160to160",
+            "--batch_size", "4",
         ],
       },
       {
@@ -174,7 +176,7 @@
         ],
       },
       {
-        "name": "Python train_vigor_2DoF_20face_40",
+        "name": "Python train_vigor_2DoF_20face_80",
         "type": "debugpy",
         "request": "launch",
         "program": "${file}",
@@ -182,12 +184,13 @@
         "args": [
             "--rotation_range", "0",
             "--area", "same",
-            "--name", "20face_40_sch",
+            "--name", "20face_80",
             "--Supervision", "Weakly",
-            "--grd_res", "40",
+            "--grd_res", "80",
             "--test", "0",
-            "--rotation_range", "180",
-        ],
+            "--batch_size", "12",
+            "--epochs", "15",
+          ],
       },
   ]
 }

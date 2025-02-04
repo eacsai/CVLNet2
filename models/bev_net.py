@@ -51,8 +51,7 @@ class BEVNet(nn.Module):
             )
         self.blocks = nn.Sequential(*blocks)
         self.output_layer = AdaptationBlock(conf.latent_dim, conf.output_dim)
-        if conf.confidence:
-            self.confidence_layer = AdaptationBlock(conf.latent_dim, 1)
+        self.confidence_layer = AdaptationBlock(conf.latent_dim, 1)
 
         def update_padding(module):
             if isinstance(module, nn.Conv2d):
@@ -66,8 +65,7 @@ class BEVNet(nn.Module):
         pred = {
             "output": self.output_layer(features),
         }
-        if False:
-            pred["confidence"] = self.confidence_layer(features).squeeze(1).sigmoid()
+        pred["confidence"] = self.confidence_layer(features).squeeze(1).sigmoid()
         return pred
 
     def loss(self, pred, data):

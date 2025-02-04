@@ -209,7 +209,10 @@ class DINO(torch.nn.Module):
                 x_i = F.interpolate(x_i, size=(32, 32), mode="bilinear", align_corners=True)
             if x_i.shape[2] == 19:
                 x_i = F.interpolate(x_i, size=(16, 64), mode="bilinear", align_corners=True)
-            
+            if x_i.shape[2] == 12:
+                x_i = F.interpolate(x_i, size=(10, 10), mode="bilinear", align_corners=True)
+            if x_i.shape[2] == 23:
+                x_i = F.interpolate(x_i, size=(20, 20), mode="bilinear", align_corners=True)
             ori_cls_tok = y_i[:, 0]
             # ignoring register tokens
             ori_spatial = y_i[:, -1 * num_spatial :]
@@ -219,7 +222,10 @@ class DINO(torch.nn.Module):
                 y_i = F.interpolate(y_i, size=(32, 32), mode="bilinear", align_corners=True)
             if y_i.shape[2] == 19:
                 y_i = F.interpolate(y_i, size=(16, 64), mode="bilinear", align_corners=True)
-
+            if y_i.shape[2] == 12:
+                y_i = F.interpolate(y_i, size=(10, 10), mode="bilinear", align_corners=True)
+            if y_i.shape[2] == 23:
+                y_i = F.interpolate(y_i, size=(20, 20), mode="bilinear", align_corners=True)
             # TODO: change this to be concat
             outputs.append(x_i + y_i)
 
