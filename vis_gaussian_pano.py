@@ -11,8 +11,7 @@ import numpy as np
 from torchvision import transforms
 from gaussian.decoder import DecoderOutput
 from gaussian.diagonal_gaussian_distribution import DiagonalGaussianDistribution
-from gaussian.latent_splat_feat import render_cuda_orthographic
-
+from gaussian.pano_splat import render_cuda_orthographic
 # from gaussian.nopo_cuda_splatting import render_cuda_orthographic
 to_pil_image = transforms.ToPILImage()
 
@@ -35,10 +34,9 @@ class Gaussians:
     means: Float[Tensor, "batch gaussian dim"]
     covariances: Float[Tensor, "batch gaussian dim dim"]
     opacities: Float[Tensor, "batch gaussian"]
-    color_harmonics: Union[Float[Tensor, "batch gaussian 3 d_sh"], None]
+    rgbs: Union[Float[Tensor, "batch gaussian 3"], None]
     features: Float[Tensor, "batch gaussian dim"]
     confidence: Float[Tensor, "batch gaussian 1"]
-    rgbs: Union[Float[Tensor, "batch gaussian 3"], None]
 
 def _sanitize_color(color: Color) -> Float[Tensor, "#channel"]:
     # Convert tensor to list (or individual item).
@@ -245,8 +243,8 @@ def render_projections(
     heading: Union[Tensor, None] = None,
     look_axis = 1,
     rot_range = 10.0,
-    width = 101.0 / 2,
-    height = 101.0 / 2,
+    width = 70.0,
+    height = 70.0,
 ) -> Float[Tensor, "batch 3 3 height width"]:
     device = gaussians.means.device
     B, _, _ = gaussians.means.shape
@@ -255,7 +253,7 @@ def render_projections(
     color_out = []
     feature_out = []
     confidence_out = []
-
+    depth_out = []
     for b in range(B):
         # Compute the minima and maxima of the scene.
         minima = gaussians.means[b:b+1].min(dim=1).values
@@ -315,21 +313,22 @@ def render_projections(
             torch.zeros((1, 3), dtype=torch.float32, device=device),
             gaussians.means[b:b+1],
             gaussians.covariances[b:b+1],
-            gaussians.color_harmonics[b:b+1] if hasattr(gaussians, 'color_harmonics') else None,
-            gaussians.opacities[b:b+1],
+            gaussians.rgbs[b:b+1],
+            gaussians.confidence[b:b+1],
             gaussians.features[b:b+1],
             gaussians.confidence[b:b+1],
-            gaussians.rgbs[b:b+1] if hasattr(gaussians, 'rgbs') else None,
             fov_degrees=0.1,
             use_sh=True,
         )
         color = render_out.color
         feature = render_out.feature
         confidence = render_out.confidence
+        depth = render_out.depth
         color_out.append(color)
         feature_out.append(feature)
         confidence_out.append(confidence)
-    return torch.cat(color_out, dim=0), torch.cat(feature_out, dim=0), torch.cat(confidence_out, dim=0)
+        depth_out.append(depth)
+    return torch.cat(color_out, dim=0), torch.cat(feature_out, dim=0), torch.cat(confidence_out, dim=0), torch.cat(depth_out, dim=0)
 
 def render_to_decoder_output(
     render_output,

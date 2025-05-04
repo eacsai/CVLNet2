@@ -214,6 +214,7 @@ def render_cuda_orthographic(
     gaussian_opacities: Float[Tensor, "batch gaussian"],
     gaussian_feature: Union[Float[Tensor, "batch gaussian channels"], None] = None,
     gaussian_confidence: Union[Float[Tensor, "batch gaussian"], None] = None,
+    gaussian_rgbs: Union[Float[Tensor, "batch gaussian 3"], None] = None,
     fov_degrees: float = 0.1,
     use_sh: bool = True,
     dump: Union[dict, None] = None,
@@ -238,9 +239,11 @@ def render_cuda_orthographic(
             features = gaussian_feature
         if gaussian_confidence is not None:
             confidence = gaussian_confidence
+        if gaussian_rgbs is not None:
+            colors_precomp = gaussian_rgbs
     else:
-        if gaussian_color_sh_coefficients is not None:
-            colors_precomp = gaussian_color_sh_coefficients[..., 0]
+        if gaussian_rgbs is not None:
+            colors_precomp = gaussian_rgbs
         if gaussian_feature is not None:
             features = gaussian_feature
         if gaussian_confidence is not None:

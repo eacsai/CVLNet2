@@ -34,7 +34,7 @@ GrdImg_H = 256  # 256 # original: 375 #224, 256
 GrdImg_W = 1024  # 1024 # original:1242 #1248, 1024
 # GrdOriImg_H = 375
 # GrdOriImg_W = 1242
-num_thread_workers = 8
+num_thread_workers = 64
 
 # train_file = './dataLoader/train_files.txt'
 train_file = './dataLoader/train_files.txt'

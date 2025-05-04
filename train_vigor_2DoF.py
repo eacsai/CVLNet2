@@ -1,12 +1,15 @@
 import os
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import transforms
-from dataLoader.Vigor_dataset import load_vigor_data
+# from dataLoader.Vigor_dataset import load_vigor_data
+from dataLoader.Vigor_dataset_gs import load_vigor_data
+from torch.utils.data import Subset
+
 # from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 import scipy.io as scio
@@ -20,7 +23,9 @@ import argparse
 import time
 import matplotlib.pyplot as plt
 import cv2
+from train_KITTI_weak import show_cam_on_image
 
+to_pil_img = transforms.ToPILImage()
 
 def test(net_test, args, save_path):
     ### net evaluation state
@@ -134,10 +139,10 @@ def val(dataloader, net, args, save_path, epoch, best=0.0, stage=None):
 
         for i, Data in enumerate(dataloader, 0):
 
-            grd, sat, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
+            grd, sat, depth_imgs, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
 
             sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict = \
-                net(sat, grd, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage)
+                net(sat, grd, depth_imgs, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage)
 
             pred_u, pred_v, corr = corr_for_translation(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict,
                                                         args, sat_uncer_dict)
@@ -227,13 +232,16 @@ def train(net, args, save_path):
     bestResult = 0.0
 
     if args.Supervision == 'Weakly':
-        # params = net.FeatureForT.parameters()
-        params = net.dpt.parameters()
+        # params = list(net.SatFeatureNet.parameters()) + list(net.GrdFeatureNet.parameters())
+        if args.share:
+            params = net.dpt_sat.parameters()
+        else:
+            params = list(net.dpt_grd.parameters()) + list(net.dpt_sat.parameters())
         optimizer = optim.AdamW(params, lr= 3.5e-4, weight_decay=5e-3, eps=1e-8)
         # TODO: change strategy to linear
         scale = float(args.batch_size / 8)
         scheduler = OneCycleLR(optimizer, 
-                                max_lr=1e-4,  # 3.5e-4
+                                max_lr=args.lr,  # 3.5e-4
                                 steps_per_epoch=int(5260 / scale), 
                                 epochs=args.epochs, # 5
                                 anneal_strategy='cos',
@@ -245,7 +253,7 @@ def train(net, args, save_path):
         params = net.gaussian_encoder.parameters()
         optimizer = optim.Adam(params, lr=1e-4)
 
-    time_start = time.time()
+    time_start = time.time()    
     for epoch in range(args.resume, args.epochs):
         net.train()
 
@@ -254,17 +262,129 @@ def train(net, args, save_path):
         trainloader, valloader = load_vigor_data(args.batch_size, area=args.area, rotation_range=args.rotation_range,
                                                  train=isTrain, weak_supervise=args.Supervision=='Weakly', amount=args.amount)
 
+        # val(valloader, net, args, save_path, epoch, best=bestResult, stage=args.stage)
+
+        # return KeyError('quit')
         print('batch_size:', args.batch_size, '\n num of batches:', len(trainloader))
 
         for Loop, Data in enumerate(trainloader, 0):
 
             if args.Supervision == 'Weakly':
-                grd, sat, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
+                grd, sat, depth_imgs, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
 
                 sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict = \
-                    net(sat, grd, None, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage, loop=Loop, save_dir=save_path)
+                    net(sat, grd, depth_imgs, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage, loop=Loop, save_dir=save_path)
 
                 corr_maps = batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, sat_uncer_dict)
+
+                if args.visualize:
+
+                    visualize_dir = os.path.join(save_path, 'visualization')
+                    if not os.path.exists(visualize_dir):
+                        os.makedirs(visualize_dir)
+
+                    level = max([int(item) for item in args.level.split('_')])
+                    corr = corr_maps[level]
+                    corr_H, corr_W = corr.shape[2:]
+
+                    gt_u1 = gt_shift_u.data.cpu().numpy() * 512/4
+                    gt_v1 = gt_shift_v.data.cpu().numpy() * 512/4
+
+                    for g_idx in range(corr.shape[0]):
+                        for s_idx in range(corr.shape[1]):
+                            if g_idx == s_idx:
+                                visualize_dir = os.path.join(save_path, 'visualization', f"{Loop}_{g_idx}")
+                                if not os.path.exists(visualize_dir):
+                                    os.makedirs(visualize_dir)
+                                
+                                max_index = torch.argmin(corr[g_idx, s_idx].reshape(-1)).data.cpu().numpy()
+
+                                pred_u = (max_index % corr_W - corr_W / 2) * np.power(2, 3 - level)
+                                pred_v = (max_index // corr_W - corr_H / 2) * np.power(2, 3 - level)
+
+                                prob_map = cv2.resize(corr[g_idx, s_idx].data.cpu().numpy(),
+                                                    (corr.shape[3] * 4, corr.shape[2] * 4))  # [25:285, 25:285]
+                                img = sat[s_idx].permute(1, 2, 0).data.cpu().numpy()[
+                                    (512 - prob_map.shape[0]) // 2: (-512 + prob_map.shape[0]) // 2,
+                                    (512 - prob_map.shape[0]) // 2: (-512 + prob_map.shape[0]) // 2, :]
+
+                                overlay = show_cam_on_image(img, prob_map, False, cv2.COLORMAP_HSV)
+
+                                fig, ax = plt.subplots()
+                                shw = ax.imshow(overlay)
+                                A = overlay.shape[0]
+                                # init = ax.scatter(A / 2, A / 2, color='r', linewidth=1, edgecolor="w", s=160, zorder=2)
+                                
+                                ax.axis('off')
+
+                                # pred = ax.scatter(pred_u + A / 2, pred_v + A / 2, linewidth=1, edgecolor="w", color='r',
+                                #                 s=240, zorder=2)
+
+                                # # import pdb; pdb.set_trace()
+                                # gt = ax.scatter(gt_u1[g_idx] + A / 2, gt_v1[g_idx] + A / 2, color='g', linewidth=1,
+                                #                 edgecolor="w", marker="*",
+                                #                 s=400,
+                                #                 zorder=2)
+                                pred = ax.scatter(
+                                    int(pred_u) + A / 2, 
+                                    int(pred_v) + A / 2, 
+                                    color='green', 
+                                    s=200, 
+                                    edgecolor='w', 
+                                    marker='o', 
+                                    alpha=0.8
+                                    )
+                                gt = ax.scatter(
+                                    int(gt_u1[g_idx]) + A / 2 + 10, 
+                                    int(gt_v1[g_idx]) + A / 2 - 15, 
+                                    color='red', 
+                                    s=400, 
+                                    edgecolor='w', 
+                                    marker='$⚑$', 
+                                    alpha=0.8
+                                    )
+                                # ax.legend([pred, gt], ['Pred', 'GT'], markerscale=1.2, frameon=False, fontsize=16,
+                                #         edgecolor="w", labelcolor='w', shadow=True, facecolor='b', loc='upper right')
+                                
+                                ax.legend(
+                                    (pred, gt),
+                                    ('Ours', 'GT'),
+                                    markerscale=1.2,
+                                    frameon=False,
+                                    fontsize=12,
+                                    edgecolor="black",
+                                    labelcolor='black',
+                                    shadow=True,
+                                    facecolor='w',
+                                    loc='upper center',  # 让 legend 在上方居中
+                                    bbox_to_anchor=(0.5, 1.12),  # 设置 legend 位置，1.05 表示在图像上方
+                                    ncol=3
+                                )
+                                
+                                plt.savefig(
+                                    os.path.join(visualize_dir,
+                                                'pos_' + str(Loop * args.batch_size + g_idx) + '_' + str(
+                                                    s_idx) + '.png'),
+                                    transparent=True, dpi=150, bbox_inches='tight', pad_inches=-0.1)
+                                plt.close()
+
+                                test_img = to_pil_img(grd[g_idx])
+                                test_img.save(os.path.join(visualize_dir, 'grd.png'))
+                                test_img = to_pil_img(sat[s_idx])
+                                test_img.save(os.path.join(visualize_dir, 'sat.png'))   
+                                # else:
+                                #     ax.legend([pred], ['Pred'], markerscale=1.2, frameon=False,
+                                #             fontsize=16,
+                                #             edgecolor="w", labelcolor='w', shadow=True, facecolor='b', loc='upper right')
+
+                                #     plt.savefig(
+                                #         os.path.join(visualize_dir,
+                                #                     'neg_' + str(Loop * args.batch_size + g_idx) + '_' + str(
+                                #                         s_idx) + '.png'),
+                                #         transparent=True, dpi=150, bbox_inches='tight', pad_inches=-0.1)
+
+                                #     plt.close()
+                        print('done')
 
                 corr_loss, GPS_loss = Weakly_supervised_loss_w_GPS_error(corr_maps, gt_shift_u, gt_shift_v,
                                                                          args,
@@ -305,7 +425,7 @@ def train(net, args, save_path):
 
                     time_start = time_end
 
-        print('Save Model ...')
+        print('Save Model ...', save_path)
         if not os.path.exists(save_path):
             os.makedirs(save_path)
 
@@ -328,7 +448,7 @@ def parse_args():
 
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
 
-    parser.add_argument('--batch_size', type=int, default=8, help='batch size')
+    parser.add_argument('--batch_size', type=int, default=4, help='batch size')
 
     parser.add_argument('--level', type=str, default='1', help=' ')
     parser.add_argument('--channels', type=str, default='32_16_4', help=' ')
@@ -338,7 +458,7 @@ def parse_args():
     parser.add_argument('--proj', type=str, default='geo', help='geo, polar, nn, CrossAttn')
     parser.add_argument('--use_uncertainty', type=int, default=0, help='0 or 1')
 
-    parser.add_argument('--area', type=str, default='cross', help='same or cross')
+    parser.add_argument('--area', type=str, default='same', help='same or cross')
     parser.add_argument('--multi_gpu', type=int, default=0, help='0 or 1')
 
     parser.add_argument('--ConfGrd', type=int, default=1, help='use confidence or not for grd image')
@@ -364,8 +484,9 @@ def parse_args():
     parser.add_argument('--grd', type=float, default=0., help='')
     parser.add_argument('--sat_grd', type=float, default=1., help='')
     parser.add_argument('--amount', type=float, default=1., help='')
-    parser.add_argument('--name', type=str, default='test', help='')
-    parser.add_argument('--grd_res', type=int, default=40, help='')
+    parser.add_argument('--name', type=str, default='pano_cuda', help='')
+    parser.add_argument('--grd_res', type=int, default=40, help='')    
+    parser.add_argument('--lr', type=float, default=1e-4, help='')    
 
     args = parser.parse_args()
 
@@ -373,9 +494,10 @@ def parse_args():
 
 
 def getSavePath(args):
-    restore_path = '/home/wangqw/video_program/CVLNet2/ModelsVIGOR/' + str(args.task) \
+    restore_path = '/home/qiwei/program/CVLNet2/ModelsVIGOR/' + str(args.task) \
                    + '/' + args.area + '_rot' + str(args.rotation_range) \
                    + '_' + str(args.proj) \
+                   + '_' + str(args.lr) \
                    + '_Level' + args.level + '_Channels' + args.channels
 
     save_path = restore_path
@@ -419,8 +541,14 @@ if __name__ == '__main__':
     net.to(device)
 
     if args.test:
-        net.load_state_dict(torch.load(os.path.join(save_path, 'Model_best.pth')), strict=False)
-        current = test(net, args, save_path)
+        # net.load_state_dict(torch.load(os.path.join(save_path, 'Model_best.pth')), strict=False)
+        # current = test(net, args, save_path)
+        path = 'ModelsVIGOR/2DoF/same_rot0.0_geo_0.0001_Level1_Channels32_16_4_ConfGrd_Weakly_20face_80/model_0.pth'
+        net.load_state_dict(torch.load(path), strict=False)
+        print("Test from " + path)
+        _, valloader = load_vigor_data(args.batch_size, area=args.area, rotation_range=args.rotation_range,
+                                                 train=True, weak_supervise=args.Supervision=='Weakly', amount=args.amount)
+        val(valloader, net, args, save_path, 0, stage=args.stage)
 
     else:
 
@@ -428,10 +556,8 @@ if __name__ == '__main__':
             net.load_state_dict(torch.load(os.path.join(save_path, 'model_' + str(args.resume - 1) + '.pth')),
                                 strict=False)
             print("resume from " + 'model_' + str(args.resume - 1) + '.pth')
-
-        if args.Supervision == 'Weakly':
-            path = "/home/wangqw/video_program/CVLNet2/ModelsVIGOR/2DoF/same_rot0.0_geo_Level1_Channels32_16_4_ConfGrd_Gaussian_20face_80"
-            net.load_state_dict(torch.load(os.path.join(path, 'model_2.pth')), strict=False)
-            net.gaussian_encoder.eval()
+        # else:
+        #     path = '/home/wangqw/video_program/CVLNet2/ModelsVIGOR/2DoF/same_rot0.0_geo_Level1_Channels32_16_4_ConfGrd_Gaussian_20face_new80/model_2.pth'
+        #     net.load_state_dict(torch.load(path), strict=False)
         train(net, args, save_path)
 

@@ -119,7 +119,7 @@ class DINO(torch.nn.Module):
         self.model_name = dino_name
         self.checkpoint_name = f"{dino_name}_{model_name}"
         
-        dino_vit = torch.hub.load("ywyue/FiT3D", "dinov2_base_fine")
+        dino_vit = torch.hub.load("/home/qiwei/.cache/torch/hub/ywyue_FiT3D_main", "dinov2_base_fine", source='local')
         dino_ori = timm.create_model("vit_base_patch14_dinov2.lvd142m", 
                                      pretrained=True, 
                                      dynamic_img_size=True, 
@@ -212,7 +212,7 @@ class DINO(torch.nn.Module):
             if x_i.shape[2] == 12:
                 x_i = F.interpolate(x_i, size=(10, 10), mode="bilinear", align_corners=True)
             if x_i.shape[2] == 23:
-                x_i = F.interpolate(x_i, size=(20, 20), mode="bilinear", align_corners=True)
+                x_i = F.interpolate(x_i, size=(20, 40), mode="bilinear", align_corners=True)
             ori_cls_tok = y_i[:, 0]
             # ignoring register tokens
             ori_spatial = y_i[:, -1 * num_spatial :]
@@ -225,7 +225,7 @@ class DINO(torch.nn.Module):
             if y_i.shape[2] == 12:
                 y_i = F.interpolate(y_i, size=(10, 10), mode="bilinear", align_corners=True)
             if y_i.shape[2] == 23:
-                y_i = F.interpolate(y_i, size=(20, 20), mode="bilinear", align_corners=True)
+                y_i = F.interpolate(y_i, size=(20, 40), mode="bilinear", align_corners=True)
             # TODO: change this to be concat
             outputs.append(x_i + y_i)
 

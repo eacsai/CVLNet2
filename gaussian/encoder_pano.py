@@ -9,82 +9,56 @@ from torch import Tensor, nn
 
 import open3d as o3d
 import plotly.graph_objs as go
+import torch.nn.functional as F
 
-from backbone.backbone_dino import BackboneDino
+from backbone.backbone_pano import BackboneDino
 from depth_predictor.depth_predictor_monocular import DepthPredictorMonocular
 from gaussian.diagonal_gaussian_distribution import DiagonalGaussianDistribution
 from gaussian.build_gaussians import sample_image_grid
 from gaussian.gaussian_adapter_pano import GaussianAdapter
+from .build_gaussians import build_covariance
 
 @dataclass
 class Gaussians:
     means: Float[Tensor, "batch gaussian dim"]
     covariances: Float[Tensor, "batch gaussian dim dim"]
     opacities: Float[Tensor, "batch gaussian"]
-    color_harmonics: Union[Float[Tensor, "batch gaussian 3 color_d_sh"], None]
     features: Float[Tensor, "batch gaussian dim"]
     confidence: Float[Tensor, "batch gaussian 1"]
+    rgbs: Float[Tensor, "batch gaussian 3"]
 
 
 def equirectangular_to_xyz(width, height, device):
-    """Convert equirectangular coordinates to spherical 3D coordinates in OpenCV convention and rotate 90° around Y-axis using PyTorch."""
-    
+    """Convert equirectangular coordinates to spherical 3D coordinates in OpenCV convention"""
     # 创建 theta 和 phi 为 1D 张量
     theta = torch.linspace(0, 2 * torch.pi, width, device=device)  # 方位角 [0, 2π]
     phi = torch.linspace(0, torch.pi, height, device=device)       # 仰角 [0, π]
     
     # 生成网格，调整 indexing='ij' 确保符合 PyTorch 约定
-    theta, phi = torch.meshgrid(theta, phi, indexing='ij')
-
+    phi, theta = torch.meshgrid(phi, theta, indexing='ij')
+    theta = theta # (H, W)
+    phi = phi     # (H, W)
     # 计算 OpenCV 形式的 X, Y, Z 坐标
-    x = torch.sin(phi) * torch.cos(theta)   # OpenCV X: 右
+    x = -torch.sin(phi) * torch.sin(theta)   # OpenCV X: 右
     y = -torch.cos(phi)                     # OpenCV Y: 下
-    z = -torch.sin(phi) * torch.sin(theta)  # OpenCV Z: 前
+    z = -torch.sin(phi) * torch.cos(theta)  # OpenCV Z: 前
 
     # 将 x, y, z 堆叠在一起，并调整维度 (height, width, 3)
-    xyz = torch.stack((x, y, z), dim=-1).permute(1, 0, 2)  # (H, W, 3)
+    xyz = torch.stack((x, y, z), dim=-1)  # (H, W, 3)
 
-    # 旋转矩阵 (顺时针旋转 90 度)
-    R_y_90 = torch.tensor([
-        [0, 0, 1],  
-        [0, 1, 0],  
-        [-1, 0, 0]
-    ], dtype=torch.float32, device=device)
-
-    # 将点云展平进行矩阵乘法 (H*W, 3) x (3,3)
-    xyz_rotated = xyz.reshape(-1, 3) @ R_y_90.T  # 应用旋转
-
-    # 还原形状为 (H, W, 3)
-    xyz_rotated = xyz_rotated.view(height, width, 3)
-
-    return xyz_rotated
-
-
-# def equirectangular_to_xyz(width, height, device):
-#     """Convert equirectangular coordinates to spherical 3D coordinates."""
-#     theta = torch.linspace(0, 2 * torch.pi, width, device=device)
-#     phi = torch.linspace(0, torch.pi, height, device=device)  
-
-#     theta, phi = torch.meshgrid(theta, phi, indexing='ij')
-
-#     x = torch.sin(phi) * (-torch.cos(theta))
-#     y = torch.sin(phi) * torch.sin(theta)
-#     z = torch.cos(phi)
-    
-#     return torch.stack((x, y, z), dim=-1).permute(1, 0, 2)
+    return xyz
 
 
 class GaussianEncoder(nn.Module):
-    def __init__(self, n_feature_channels) -> None:
+    def __init__(self, gs_dim=11) -> None:
         super(GaussianEncoder, self).__init__()
         self.backbone = BackboneDino()
         self.backbone_projection = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.backbone.d_out, 128),
         )
-        self.depth_predictor = DepthPredictorMonocular()
-        self.gaussian_adapter = GaussianAdapter(n_feature_channels)
-        
+
+        self.gpv = 3
         self.to_opacity = nn.Sequential(
             nn.ReLU(),
             nn.Linear(128, 1),
@@ -94,9 +68,14 @@ class GaussianEncoder(nn.Module):
             nn.ReLU(),
             nn.Linear(
                 128,
-                82,
+                gs_dim*self.gpv,
             ),
         )
+
+        self.pos_act = nn.Tanh()
+        self.scale_act = nn.Sigmoid()
+        self.opacity_act = nn.Sigmoid()
+        self.rot_act = lambda x: F.normalize(x, dim=-1)
         # self.to_gaussians_feat = nn.Sequential(
         #     nn.ReLU(),
         #     nn.Linear(
@@ -110,6 +89,9 @@ class GaussianEncoder(nn.Module):
             nn.ReLU(),
         )
 
+        self.offset_max = [0.3] * 3
+        self.scale_max = [0.3] * 3
+
     def map_pdf_to_opacity(
         self,
         pdf: Float[Tensor, " *batch"],
@@ -121,50 +103,61 @@ class GaussianEncoder(nn.Module):
     def forward(
         self,
         img: Float[Tensor, "batch view channels height width"],
-        grd_feat: Union[Float[Tensor, "batch view channels height width"] , None],
-        grd_conf: Union[Float[Tensor, "batch view channels height width"] , None],
-        camera_k: Float[Tensor, "batch view 3 3"],
-        extrinsics: Float[Tensor, "batch view 4 4"],
-        near: Float[Tensor, "batch view"],
-        far: Float[Tensor, "batch view"],
-        real_depth: Float[Tensor, "batch 1 height width"],
-        deterministic: bool = False,
+        grd_feat: Union[Float[Tensor, "batch channels height width"] , None],
+        grd_conf: Union[Float[Tensor, "batch channels height width"] , None],
+        depth_map: Float[Tensor, "batch 1 height width"],
     ) -> Gaussians:
-        b, v, _, h, w = img.shape
+        b, _, h, w = img.shape
         features = self.backbone(img)
-        device = features.device
-        h, w = features.shape[-2:]
-        features = rearrange(features, "b v c h w -> b v h w c").contiguous()
+        device = img.device
+        # h, w = features.shape[-2:]
+        features = rearrange(features, "b c h w -> b h w c").contiguous()
         features = self.backbone_projection(features)
-        features = rearrange(features, "b v h w c -> b v c h w").contiguous()
+        features = rearrange(features, "b h w c -> b c h w").contiguous()
 
         if self.high_resolution_skip is not None:
             # Add the high-resolution skip connection.
-            skip = rearrange(img, "b v c h w -> (b v) c h w")
-            skip = self.high_resolution_skip(skip)
-            features = features + rearrange(skip, "(b v) c h w -> b v c h w", b=b, v=v)
+            skip = self.high_resolution_skip(img)
+            features = features + skip
 
         # Sample depths from the resulting features.
-        features = rearrange(features, "b v c h w -> b v (h w) c")
-        depths, densities = self.depth_predictor.forward(
-            features,
-            near,
-            far,
-            deterministic,
-            1 if deterministic else 3,
-        )
-
+        features = rearrange(features, "b c h w -> b (h w) c")
+        depth_map = rearrange(depth_map, "b c h w -> b (h w) c")
+        # fake_depth = depths.mean(dim=-1).reshape(b, 1, 80, 160)  # 假设深度张量，形状为 [1, 80, 160]
         # Convert the features and depths into Gaussians.
         # xy_ray, _ = sample_image_grid((h, w), device)
         # xy_ray = rearrange(xy_ray, "h w xy -> (h w) () xy")
-        gaussians = self.to_gaussians(features).unsqueeze(-2)
-        # offset_xy = gaussians[..., :2].sigmoid()
-        # pixel_size = 1 / torch.tensor((w, h), dtype=torch.float32, device=device)
-        # xy_ray = xy_ray + (offset_xy - 0.5) * pixel_size
-
+        gaussians = self.to_gaussians(features)
+        gaussians = gaussians.view(b, h*w, self.gpv, -1)
         xyz_coords = equirectangular_to_xyz(w, h, device)
-        coords = xyz_coords.reshape(-1, 3).unsqueeze(0).unsqueeze(0).expand(b, -1, -1, -1)
-        means = coords.unsqueeze(-2) * depths.unsqueeze(-1)
+        coords = rearrange(xyz_coords, "h w xyz -> (h w) xyz").contiguous()
+        coords = coords.unsqueeze(0).repeat(b, 1, 1)
+
+        gs_offsets_x = self.pos_act(gaussians[..., :1]) * self.offset_max[0]
+        gs_offsets_y = self.pos_act(gaussians[..., 1:2]) * self.offset_max[1]
+        gs_offsets_z = self.pos_act(gaussians[..., 2:3]) * self.offset_max[1]
+
+        opacities = self.opacity_act(gaussians[..., 3:4])
+
+        rotations = self.rot_act(gaussians[..., 4:8])
+        scale_x = self.scale_act(gaussians[..., 8:9]) * self.scale_max[0]
+        scale_y = self.scale_act(gaussians[..., 9:10]) * self.scale_max[1]
+        scale_z = self.scale_act(gaussians[..., 10:11]) * self.scale_max[2]
+
+        scales = torch.cat([scale_x, scale_y, scale_z], dim=-1)
+        offset_xyz = torch.cat([gs_offsets_x, gs_offsets_y, gs_offsets_z], dim=-1)
+        
+        means = coords * depth_map
+        means = means[:,:,None,:] + offset_xyz
+        covariances = build_covariance(scales, rotations)
+
+        gs_features = rearrange(grd_feat, "batch channels height width -> batch (height width) channels").unsqueeze(-2)
+        gs_confidences = rearrange(grd_conf, "batch channels height width -> batch (height width) channels").unsqueeze(-2)
+        gs_rgbs = rearrange(img, "batch channels height width -> batch (height width) channels").unsqueeze(-2)
+        
+        gs_features = gs_features.broadcast_to((*opacities.shape[:-1], 32))
+        gs_confidences = gs_confidences.broadcast_to((*opacities.shape[:-1], 1))
+        gs_rgbs = gs_rgbs.broadcast_to((*opacities.shape[:-1], 3))
         # 假设你有以下张量
         # image_tensor = img[:,0]  # 图像张量，形状为 [1, 3, 80, 160]
         # fake_depth = depths[:, :, :, 0].reshape(1, 1, 80, 160)  # 假设深度张量，形状为 [1, 80, 160]
@@ -199,62 +192,30 @@ class GaussianEncoder(nn.Module):
         # # 保存为 HTML 文件，下载后用浏览器打开
         # fig.write_html("point_cloud1.html")
 
-        gpp = 3
-        gaussians = self.gaussian_adapter.forward(
-            extrinsics,
-            camera_k,
-            means,
-            depths,
-            self.map_pdf_to_opacity(densities) / gpp,
-            gaussians,
-            grd_feat,
-            grd_conf,
-            (h, w),
-        )
-
-        # Dump visualizations if needed.
-        # if visualization_dump is not None:
-        #     visualization_dump["depth"] = rearrange(
-        #         depths, "b (h w) s -> b h w s", h=h, w=w
-        #     )
-        #     visualization_dump["scales"] = rearrange(
-        #         gaussians.scales, "b r spp xyz -> b (r spp) xyz"
-        #     )
-        #     visualization_dump["rotations"] = rearrange(
-        #         gaussians.rotations, "b r spp xyzw -> b (r spp) xyzw"
-        #     )
-
-        # Optionally apply a per-pixel opacity.
-        # opacity_multiplier = (
-        #     rearrange(self.to_opacity(features), "b v r () -> b v r () ()")
-        #     if self.cfg.predict_opacity
-        #     else 1
-        # )
-
         return Gaussians(
             rearrange(
-                gaussians.means,
-                "b v r spp xyz -> b (v r spp) xyz",
+                means,
+                "b r spp xyz -> b (r spp) xyz",
             ),
             rearrange(
-                gaussians.covariances,
-                "b v r spp i j -> b (v r spp) i j",
+                covariances,
+                "b r spp i j -> b (r spp) i j",
             ),
             rearrange(
-                gaussians.opacities,
-                "b v r spp -> b (v r spp)",
+                opacities,
+                "b r spp c -> b (r spp) c",
             ),
             rearrange(
-                gaussians.color_harmonics,
-                "b v r spp c d_c_sh -> b (v r spp) c d_c_sh",
+                gs_features,
+                "b r spp c -> b (r spp) c",
             ),
             rearrange(
-                gaussians.features,
-                "b v r spp c -> b (v r spp) c",
+                gs_confidences,
+                "b r spp c -> b (r spp) c",
             ),
             rearrange(
-                gaussians.confidence,
-                "b v r spp c -> b (v r spp) c",
+                gs_rgbs,
+                "b r spp c -> b (r spp) c",
             )
         )
 

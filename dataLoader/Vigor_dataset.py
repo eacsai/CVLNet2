@@ -11,8 +11,8 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-num_thread_workers = 8
-root = '/data/dataset/wqw/VIGOR'
+num_thread_workers = 32
+root = '/data/dataset/VIGOR'
 
 class VIGORDataset(Dataset):
     def __init__(self, root, rotation_range, label_root='splits__corrected', split='same', train=True, transform=None, pos_only=True, amount=1.):
@@ -59,6 +59,7 @@ class VIGORDataset(Dataset):
 
         # load grd list
         self.grd_list = []
+        self.depth_list = []
         self.label = []
         self.sat_cover_dict = {}
         self.delta = []
@@ -82,6 +83,8 @@ class VIGORDataset(Dataset):
                     label = np.array(label).astype(int)
                     delta = np.array([data[2:4], data[5:7], data[8:10], data[11:13]]).astype(float)
                     self.grd_list.append(os.path.join(self.root, city, 'pano_mask_sky', data[0]))
+                    self.depth_list.append(os.path.join(self.root, city, 'UniK3D_same_metric', data[0].replace('.jpg', '_depth.npy')))
+                    # self.depth_list.append(os.path.join(self.root, city, 'depth_anywhere_same', data[0].replace('.jpg', '_depth.png')))                    
                     self.label.append(label)
                     self.delta.append(delta)
                     if not label[0] in self.sat_cover_dict:
@@ -117,6 +120,17 @@ class VIGORDataset(Dataset):
             grd = PIL.Image.new('RGB', (320, 640))  # if the image is unreadable, use a blank image
         grd = self.grdimage_transform(grd)
 
+        # try:
+        #     depth = PIL.Image.open(os.path.join(self.depth_list[idx]))
+        #     depth = depth.convert('L')
+        # except:
+        #     print('unreadable image')
+        #     depth = PIL.Image.new('L', (320, 640))
+
+        # depth_img = self.grdimage_transform(depth)
+        
+        depth_img = np.load(self.depth_list[idx])
+        depth_img = torch.tensor(depth_img, dtype=torch.float32)
         # generate a random rotation
         rotation = np.random.uniform(low=-1.0, high=1.0)  #
         rotation_angle = rotation * self.rotation_range
@@ -158,7 +172,7 @@ class VIGORDataset(Dataset):
         elif 'Chicago' in self.grd_list[idx]:
             city = 'Chicago'
 
-        return grd, sat, \
+        return grd, sat, depth_img, \
             torch.tensor(gt_shift_x, dtype=torch.float32), \
             torch.tensor(gt_shift_y, dtype=torch.float32), \
             torch.tensor(rotation, dtype=torch.float32), \
@@ -261,6 +275,7 @@ def load_vigor_data(batch_size, area="same", rotation_range=10, train=True, weak
         train_indices = index_list[0: int(len(index_list) * 0.8)]
         val_indices = index_list[int(len(index_list) * 0.8):]
         training_set = Subset(vigor, train_indices)
+        # training_set = Subset(vigor, range(20))
         val_set = Subset(vigor, val_indices)
         if weak_supervise:
             train_bs = DistanceBatchSampler(torch.utils.data.RandomSampler(training_set), batch_size, True,

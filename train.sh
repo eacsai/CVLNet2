@@ -30,21 +30,23 @@ python "./train_KITTI_weak.py" \
   --level 1 \
   --ConfGrd 1 \
   --contrastive_coe 1 \
-  --name "feat32_128*512" \
-  --batch_size 4 \
+  --name "feat32_no_rgb" \
+  --batch_size 12 \
   --epochs 8
   
   #6.25e-5 cos GPS
-  python "./train_KITTI_weak.py" \
-    --rotation_range 10 \
-    --stage 3 \
+  python "./train_KITTI_weak_nips.py" \
+    --rotation_range 0 \
+    --stage 4 \
     --share 1 \
     --level 1 \
     --ConfGrd 1 \
     --contrastive_coe 1 \
-    --name "feat32_GPS" \
-    --batch_size 12 \
-    --epochs 10
+    --name "feat32_offset_0.3" \
+    --batch_size 8 \
+    --epochs 10 \
+    --test 0
+    
 
   #6.25e-5 cos
   python "./train_KITTI_weak.py" \
@@ -70,15 +72,26 @@ python "./train_KITTI_weak.py" \
     --epochs 5
 
 python "./train_KITTI_weak.py" \
-  --rotation_range 10 \
+  --rotation_range 0 \
   --stage 4 \
   --share 1 \
   --level 1 \
   --ConfGrd 1 \
   --contrastive_coe 1 \
-  --name "feat32_dpt_best" \
-  --batch_size 12 \
-  --epochs 4
+  --name "op_as_confidence" \
+  --batch_size 8 \
+  --epochs 10
+
+python "./train_KITTI_weak.py" \
+  --rotation_range 0 \
+  --stage 4 \
+  --share 1 \
+  --level 1 \
+  --ConfGrd 1 \
+  --contrastive_coe 1 \
+  --name "original_confidence" \
+  --batch_size 8 \
+  --epochs 10
 
 python "./train_vigor_2DoF.py" \
   --rotation_range 0 \
@@ -99,11 +112,25 @@ python "./train_vigor_2DoF.py" \
   --rotation_range 0 \
   --Supervision "Weakly" \
   --area "same" \
-  --name '20face_80_same_dpt160_6.25e-5' \
+  --name 'resnet_vigor' \
   --batch_size 8 \
   --epochs 15 \
   --grd_res 80 \
-  --test 0
+  --test 0 \
+  --share 0 \
+  --lr 6.5e-5
+
+python "./train_vigor_2DoF.py" \
+  --rotation_range 0 \
+  --Supervision "Weakly" \
+  --area "same" \
+  --name 'vigor_0.3' \
+  --batch_size 12 \
+  --epochs 15 \
+  --grd_res 80 \
+  --test 0 \
+  --share 0 \
+  --lr 1e-4
 
 python "./train_vigor_2DoF.py" \
   --rotation_range 0 \
@@ -112,8 +139,8 @@ python "./train_vigor_2DoF.py" \
   --level 1 \
   --Supervision "Gaussian" \
   --area "same" \
-  --name '20face_new80' \
-  --batch_size 4
+  --name 'omni_scene' \
+  --batch_size 32
 
 python "./train_KITTI_weak_direct.py" \
   --rotation_range 0 \

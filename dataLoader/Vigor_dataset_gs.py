@@ -11,18 +11,30 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-num_thread_workers = 8
-root = '/data/dataset/wqw/VIGOR'
+num_thread_workers = 32
+root = '/data/dataset/VIGOR'
 
 class VIGORDataset(Dataset):
-    def __init__(self, root, rotation_range, label_root='splits__corrected', split='same', train=True, transform=None, pos_only=True, amount=1.):
+    def __init__(self, 
+                 root, 
+                 rotation_range, 
+                 label_root='splits__corrected', 
+                 split='same', 
+                 train=True, 
+                 transform=None, 
+                 pos_only=True, 
+                 amount=1.,
+                 width=160,
+                 height=80
+                 ):
         self.root = root
         self.rotation_range = rotation_range
         self.label_root = label_root
         self.split = split
         self.train = train
         self.pos_only = pos_only
-
+        self.height = height
+        self.width = width
         if transform != None:
             self.grdimage_transform = transform[0]
             self.satimage_transform = transform[1]
@@ -83,7 +95,8 @@ class VIGORDataset(Dataset):
                     label = np.array(label).astype(int)
                     delta = np.array([data[2:4], data[5:7], data[8:10], data[11:13]]).astype(float)
                     self.grd_list.append(os.path.join(self.root, city, 'pano_mask_sky', data[0]))
-                    self.depth_list.append(os.path.join(self.root, city, 'new_depth', data[0].replace('.jpg', '_depth.png')))
+                    self.depth_list.append(os.path.join(self.root, city, 'UniK3D_same_metric', data[0].replace('.jpg', '_depth.npy')))
+                    # self.depth_list.append(os.path.join(self.root, city, 'depth_anywhere_same', data[0].replace('.jpg', '_depth.png')))
                     # self.depth_list.append(os.path.join(self.root, city, 'pers_imgs_160_new', data[0].replace('.jpg', '_pers.pt')))
                     # self.grd_params.append(os.path.join(self.root, city, 'pers_imgs', data[0].replace('.jpg', '_pers.pt')))
                     self.label.append(label)
@@ -93,8 +106,7 @@ class VIGORDataset(Dataset):
                     else:
                         self.sat_cover_dict[label[0]].append(idx)
                     idx += 1
-                    if idx >= 5000:
-                        break
+
             print('InputData::__init__: load ', label_fname, idx)
 
         self.data_size = int(len(self.grd_list) * amount)
@@ -104,6 +116,7 @@ class VIGORDataset(Dataset):
         print('Grd loaded, data size:{}'.format(self.data_size))
         self.label = np.array(self.label)
         self.delta = np.array(self.delta)
+        self.direction = get_panorama_ray_directions(self.height, self.width)
 
     def __len__(self):
         return self.data_size
@@ -119,15 +132,17 @@ class VIGORDataset(Dataset):
             grd = PIL.Image.new('RGB', (320, 640))  # if the image is unreadable, use a blank image
         grd = self.grdimage_transform(grd)
 
-        try:
-            depth = PIL.Image.open(os.path.join(self.depth_list[idx]))
-            depth = depth.convert('L')
-        except:
-            print('unreadable image')
-            depth = PIL.Image.new('L', (320, 640))
+        # try:
+        #     depth = PIL.Image.open(os.path.join(self.depth_list[idx]))
+        #     depth = depth.convert('L')
+        # except:
+        #     print('unreadable image')
+        #     depth = PIL.Image.new('L', (320, 640))
 
-        depth_img = self.grdimage_transform(depth)
-
+        # depth_img = self.grdimage_transform(depth)
+        
+        depth_img = np.load(self.depth_list[idx])
+        depth_img = torch.tensor(depth_img, dtype=torch.float32)
         # depth_img = torch.load(self.depth_list[idx], map_location='cpu')
         # depth_img = depth_img['depth_imgs']
         
@@ -208,7 +223,36 @@ def load_vigor_data(batch_size, area="same", rotation_range=0, train=True, weak_
     vigor = VIGORDataset(root, rotation_range, split=area, train=train, transform=(transform_grd, transform_sat),
                          amount=amount)
 
-    train_dataloader = DataLoader(vigor, batch_size=batch_size, shuffle=False)
-    # val_dataloader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+    index_list = np.arange(vigor.__len__())
+    # np.random.shuffle(index_list)
+    train_indices = index_list[0: int(len(index_list) * 0.8)]
+    val_indices = index_list[int(len(index_list) * 0.8):]
+    training_set = Subset(vigor, train_indices)
+    # training_set = Subset(vigor, range(20))
+    val_set = Subset(vigor, val_indices)
 
-    return train_dataloader, train_dataloader
+    train_dataloader = DataLoader(training_set, batch_size=batch_size, shuffle=True, num_workers=num_thread_workers)
+    val_dataloader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+
+    return train_dataloader, val_dataloader
+
+def get_panorama_ray_directions(
+    H: int,
+    W: int,
+):  
+    # 创建 theta 和 phi 为 1D 张量
+    theta = torch.linspace(0, 2 * torch.pi, W)  # 方位角 [0, 2π]
+    phi = torch.linspace(0, torch.pi, H)       # 仰角 [0, π]
+    
+    # 生成网格，调整 indexing='ij' 确保符合 PyTorch 约定
+    phi, theta = torch.meshgrid(phi, theta, indexing='ij')
+
+    # 计算 OpenCV 形式的 X, Y, Z 坐标
+    x = -torch.sin(phi) * torch.sin(theta)   # OpenCV X: 右
+    y = -torch.cos(phi)                     # OpenCV Y: 下
+    z = -torch.sin(phi) * torch.cos(theta)  # OpenCV Z: 前
+
+    # 将 x, y, z 堆叠在一起，并调整维度 (height, width, 3)
+    directions = torch.stack((x, y, z), dim=-1)  # (B, H, W, 3)
+    
+    return directions

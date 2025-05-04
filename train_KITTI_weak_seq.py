@@ -1,12 +1,12 @@
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from dataLoader.KITTI_dataset import load_train_data, load_test1_data, load_test2_data
+from dataLoader.KITTI_dataset_seq import load_train_data, load_test1_data, load_test2_data
 import scipy.io as scio
 from torchvision import transforms
 import ssl
@@ -17,7 +17,7 @@ to_pil_img = transforms.ToPILImage()
 ssl._create_default_https_context = ssl._create_unverified_context  # for downloading pretrained VGG weights
 
 # from models_ford import loss_func, loss_func_l2
-from models.models_kitti import Model, batch_wise_cross_corr, corr_for_translation, weak_supervise_loss, \
+from models.models_kitti_seq import Model, batch_wise_cross_corr, corr_for_translation, weak_supervise_loss, \
     Weakly_supervised_loss_w_GPS_error, corr_for_accurate_translation_supervision, GT_triplet_loss, loss_func
 
 import numpy as np
@@ -214,7 +214,7 @@ def test1(net_test, args, save_path, epoch):
 
     net_test.eval()
 
-    dataloader = load_test1_data(args.batch_size, args.shift_range_lat, args.shift_range_lon, args.rotation_range)
+    dataloader = load_test1_data(args.batch_size, args.shift_range_lat, args.shift_range_lon, args.rotation_range, sequence=args.sequence)
     
     print('batch_size:', args.batch_size, '\n num of batches:', len(dataloader))
     pred_lons = []
@@ -232,11 +232,14 @@ def test1(net_test, args, save_path, epoch):
 
     with torch.no_grad():
         for i, Data in enumerate(dataloader, 0):
-            sat_align_cam, sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_depth = [item.to(device) for
-                                                                                                        item in Data[:8]]
+            sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, loc_shift_left, heading_shift_left, real_gps = [item.to(device) for item in Data[:-1]]
 
             sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, mask_dict, shift_lats, shift_lons, thetas, render_loss = \
-                net(sat_align_cam, sat_map, grd_left_imgs, grd_depth, left_camera_k, gt_heading)
+                net(sat_map, grd_left_imgs, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, loc_shift_left, heading_shift_left)
+
+
+            
+            gt_heading = gt_heading[:,:1]
 
             pred_u, pred_v, corr = corr_for_translation(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict,
                                                         args,
@@ -348,8 +351,8 @@ def test1(net_test, args, save_path, epoch):
             pred_lats.append(pred_v.data.cpu().numpy())
             pred_oriens.append(pred_orien.data.cpu().numpy() * args.rotation_range)
 
-            # pred_lons_neuralOpt.append(shift_lons[:, -1, -1].data.cpu().numpy())
-            # pred_lats_neuralOpt.append(shift_lats[:, -1, -1].data.cpu().numpy())
+            pred_lons_neuralOpt.append(shift_lons[:, -1, -1].data.cpu().numpy())
+            pred_lats_neuralOpt.append(shift_lats[:, -1, -1].data.cpu().numpy())
 
             gt_lons.append(gt_shift_u[:, 0].data.cpu().numpy() * args.shift_range_lon)
             gt_lats.append(gt_shift_v[:, 0].data.cpu().numpy() * args.shift_range_lat)
@@ -366,8 +369,8 @@ def test1(net_test, args, save_path, epoch):
     pred_lats = np.concatenate(pred_lats, axis=0)
     pred_oriens = np.concatenate(pred_oriens, axis=0)
 
-    # pred_lons_neuralOpt = np.concatenate(pred_lons_neuralOpt, axis=0)
-    # pred_lats_neuralOpt = np.concatenate(pred_lats_neuralOpt, axis=0)
+    pred_lons_neuralOpt = np.concatenate(pred_lons_neuralOpt, axis=0)
+    pred_lats_neuralOpt = np.concatenate(pred_lats_neuralOpt, axis=0)
     
     gt_lons = np.concatenate(gt_lons, axis=0)
     gt_lats = np.concatenate(gt_lats, axis=0)
@@ -377,15 +380,15 @@ def test1(net_test, args, save_path, epoch):
                                                          'pred_lats': pred_lats, 'pred_lons': pred_lons, 'pred_oriens': pred_oriens})
 
     distance = np.sqrt((pred_lons - gt_lons) ** 2 + (pred_lats - gt_lats) ** 2)  # [N]
-    # distanc_neuralOpt = np.sqrt((pred_lons_neuralOpt - gt_lons) ** 2 + (pred_lats_neuralOpt - gt_lats) ** 2)  # [N]
+    distanc_neuralOpt = np.sqrt((pred_lons_neuralOpt - gt_lons) ** 2 + (pred_lats_neuralOpt - gt_lats) ** 2)  # [N]
 
     init_dis = np.sqrt(gt_lats ** 2 + gt_lons ** 2)
     
     diff_lats = np.abs(pred_lats - gt_lats)
     diff_lons = np.abs(pred_lons - gt_lons)
 
-    # diff_lats_neuralOpt = np.abs(pred_lats_neuralOpt - gt_lats)
-    # diff_lons_neuralOpt = np.abs(pred_lons_neuralOpt - gt_lons)
+    diff_lats_neuralOpt = np.abs(pred_lats_neuralOpt - gt_lats)
+    diff_lons_neuralOpt = np.abs(pred_lons_neuralOpt - gt_lons)
    
     angle_diff = np.remainder(np.abs(pred_oriens - gt_oriens), 360)
     idx0 = angle_diff > 180
@@ -408,24 +411,24 @@ def test1(net_test, args, save_path, epoch):
     print(line)
     f.write(line + '\n')
 
-    line = 'Distance average: (init, pred by corr, pred by neuralOpt)' + str(np.mean(init_dis)) + ' ' + str(np.mean(distance))
+    line = 'Distance average: (init, pred by corr, pred by neuralOpt)' + str(np.mean(init_dis)) + ' ' + str(np.mean(distance)) + ' ' + str(np.mean(distanc_neuralOpt))
     print(line)
     f.write(line + '\n')
-    line = 'Distance median: (init, pred by corr, pred by neuralOpt)' + str(np.median(init_dis)) + ' ' + str(np.median(distance))
-    print(line)
-    f.write(line + '\n')
-
-    line = 'Lateral average: (init, pred by corr, pred by neuralOpt)' + str(np.mean(np.abs(gt_lats))) + ' ' + str(np.mean(diff_lats))
-    print(line)
-    f.write(line + '\n')
-    line = 'Lateral median: (init, pred by corr, pred by neuralOpt)' + str(np.median(np.abs(gt_lats))) + ' ' + str(np.median(diff_lats))
+    line = 'Distance median: (init, pred by corr, pred by neuralOpt)' + str(np.median(init_dis)) + ' ' + str(np.median(distance)) + ' ' + str(np.median(distanc_neuralOpt))
     print(line)
     f.write(line + '\n')
 
-    line = 'Longitudinal average: (init by corr, pred, pred by neuralOpt)' + str(np.mean(np.abs(gt_lons))) + ' ' + str(np.mean(diff_lons))
+    line = 'Lateral average: (init, pred by corr, pred by neuralOpt)' + str(np.mean(np.abs(gt_lats))) + ' ' + str(np.mean(diff_lats)) + ' ' + str(np.mean(diff_lats_neuralOpt))
     print(line)
     f.write(line + '\n')
-    line = 'Longitudinal median: (init by corr, pred, pred by neuralOpt)' + str(np.median(np.abs(gt_lons))) + ' ' + str(np.median(diff_lons))
+    line = 'Lateral median: (init, pred by corr, pred by neuralOpt)' + str(np.median(np.abs(gt_lats))) + ' ' + str(np.median(diff_lats)) + ' ' + str(np.median(diff_lats_neuralOpt))
+    print(line)
+    f.write(line + '\n')
+
+    line = 'Longitudinal average: (init by corr, pred, pred by neuralOpt)' + str(np.mean(np.abs(gt_lons))) + ' ' + str(np.mean(diff_lons)) + ' ' + str(np.mean(diff_lons_neuralOpt))
+    print(line)
+    f.write(line + '\n')
+    line = 'Longitudinal median: (init by corr, pred, pred by neuralOpt)' + str(np.median(np.abs(gt_lons))) + ' ' + str(np.median(diff_lons)) + ' ' + str(np.median(diff_lons_neuralOpt))
     print(line)
     f.write(line + '\n')
 
@@ -439,7 +442,9 @@ def test1(net_test, args, save_path, epoch):
     for idx in range(len(metrics)):
         pred = np.sum(distance < metrics[idx]) / distance.shape[0] * 100
         init = np.sum(init_dis < metrics[idx]) / init_dis.shape[0] * 100
-        line = 'distance within ' + str(metrics[idx]) + ' meters (init, pred by corr, pred by neuralOpt): ' + str(init) + ' ' + str(pred)
+        pred_opt = np.sum(distanc_neuralOpt < metrics[idx]) / distanc_neuralOpt.shape[0] * 100
+
+        line = 'distance within ' + str(metrics[idx]) + ' meters (init, pred by corr, pred by neuralOpt): ' + str(init) + ' ' + str(pred) + ' ' + str(pred_opt)
         print(line)
         f.write(line + '\n')
 
@@ -449,7 +454,9 @@ def test1(net_test, args, save_path, epoch):
     for idx in range(len(metrics)):
         pred = np.sum(diff_lats < metrics[idx]) / diff_lats.shape[0] * 100
         init = np.sum(np.abs(gt_lats) < metrics[idx]) / gt_lats.shape[0] * 100
-        line = 'lateral within ' + str(metrics[idx]) + ' meters (init, pred by corr, pred by neuralOpt): ' + str(init) + ' ' + str(pred)
+        pred_opt = np.sum(diff_lats_neuralOpt < metrics[idx]) / diff_lats_neuralOpt.shape[0] * 100
+
+        line = 'lateral within ' + str(metrics[idx]) + ' meters (init, pred by corr, pred by neuralOpt): ' + str(init) + ' ' + str(pred) + ' ' + str(pred_opt)
         print(line)
         f.write(line + '\n')
 
@@ -457,7 +464,9 @@ def test1(net_test, args, save_path, epoch):
 
         pred = np.sum(diff_lons < metrics[idx]) / diff_lons.shape[0] * 100
         init = np.sum(np.abs(gt_lons) < metrics[idx]) / gt_lons.shape[0] * 100
-        line = 'longitudinal within ' + str(metrics[idx]) + ' meters (init, pred by corr, pred by neuralOpt): ' + str(init) + ' ' + str(pred)
+        pred_opt = np.sum(diff_lons_neuralOpt < metrics[idx]) / diff_lons_neuralOpt.shape[0] * 100
+
+        line = 'longitudinal within ' + str(metrics[idx]) + ' meters (init, pred by corr, pred by neuralOpt): ' + str(init) + ' ' + str(pred) + ' ' + str(pred_opt)
         print(line)
         f.write(line + '\n')
 
@@ -482,7 +491,7 @@ def test2(net_test, args, save_path, epoch):
 
     net_test.eval()
 
-    dataloader = load_test2_data(args.batch_size, args.shift_range_lat, args.shift_range_lon, args.rotation_range)
+    dataloader = load_test2_data(args.batch_size, args.shift_range_lat, args.shift_range_lon, args.rotation_range, sequence=args.sequence)
     print('batch_size:', args.batch_size, '\n num of batches:', len(dataloader))
     
     pred_lons = []
@@ -498,13 +507,15 @@ def test2(net_test, args, save_path, epoch):
 
     with torch.no_grad():
         for i, Data in enumerate(dataloader, 0):
-            sat_align_cam, sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_depth = [item.to(device)
-                                                                                                        for
-                                                                                                        item in
-                                                                                                        Data[:8]]
-            # if args.stage == 0:
+            sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, loc_shift_left, heading_shift_left, real_gps = [item.to(device) for item in Data[:-1]]
+
             sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, mask_dict, shift_lats, shift_lons, thetas, render_loss = \
-                net(sat_align_cam, sat_map, grd_left_imgs, grd_depth, left_camera_k, gt_heading)
+                net(sat_map, grd_left_imgs, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, loc_shift_left, heading_shift_left)
+
+
+            
+            gt_heading = gt_heading[:,:1]
+
             pred_orien = thetas[:, -1, -1]
             # else:
             #     sat_feat_dict, sat_uncer_dict, g2s_feat_dict, g2s_conf_dict, shift_lats, shift_lons, pred_orien = \
@@ -524,8 +535,8 @@ def test2(net_test, args, save_path, epoch):
             pred_lats.append(pred_v.data.cpu().numpy())
             pred_oriens.append(pred_orien.data.cpu().numpy() * args.rotation_range)
 
-            # pred_lons_neuralOpt.append(shift_lons[:, -1, -1].data.cpu().numpy())
-            # pred_lats_neuralOpt.append(shift_lats[:, -1, -1].data.cpu().numpy())
+            pred_lons_neuralOpt.append(shift_lons[:, -1, -1].data.cpu().numpy())
+            pred_lats_neuralOpt.append(shift_lats[:, -1, -1].data.cpu().numpy())
 
             gt_lons.append(gt_shift_u[:, 0].data.cpu().numpy() * args.shift_range_lon)
             gt_lats.append(gt_shift_v[:, 0].data.cpu().numpy() * args.shift_range_lat)
@@ -538,8 +549,8 @@ def test2(net_test, args, save_path, epoch):
     pred_lats = np.concatenate(pred_lats, axis=0)
     pred_oriens = np.concatenate(pred_oriens, axis=0)
 
-    # pred_lons_neuralOpt = np.concatenate(pred_lons_neuralOpt, axis=0)
-    # pred_lats_neuralOpt = np.concatenate(pred_lats_neuralOpt, axis=0)
+    pred_lons_neuralOpt = np.concatenate(pred_lons_neuralOpt, axis=0)
+    pred_lats_neuralOpt = np.concatenate(pred_lats_neuralOpt, axis=0)
 
     gt_lons = np.concatenate(gt_lons, axis=0)
     gt_lats = np.concatenate(gt_lats, axis=0)
@@ -551,15 +562,15 @@ def test2(net_test, args, save_path, epoch):
     #                                                      'pred_lats': pred_lats, 'pred_lons': pred_lons})
 
     distance = np.sqrt((pred_lons - gt_lons) ** 2 + (pred_lats - gt_lats) ** 2)  # [N]
-    # distanc_neuralOpt = np.sqrt((pred_lons_neuralOpt - gt_lons) ** 2 + (pred_lats_neuralOpt - gt_lats) ** 2)  # [N]
+    distanc_neuralOpt = np.sqrt((pred_lons_neuralOpt - gt_lons) ** 2 + (pred_lats_neuralOpt - gt_lats) ** 2)  # [N]
 
     init_dis = np.sqrt(gt_lats ** 2 + gt_lons ** 2)
 
     diff_lats = np.abs(pred_lats - gt_lats)
     diff_lons = np.abs(pred_lons - gt_lons)
 
-    # diff_lats_neuralOpt = np.abs(pred_lats_neuralOpt - gt_lats)
-    # diff_lons_neuralOpt = np.abs(pred_lons_neuralOpt - gt_lons)
+    diff_lats_neuralOpt = np.abs(pred_lats_neuralOpt - gt_lats)
+    diff_lons_neuralOpt = np.abs(pred_lons_neuralOpt - gt_lons)
    
     angle_diff = np.remainder(np.abs(pred_oriens - gt_oriens), 360)
     idx0 = angle_diff > 180
@@ -582,24 +593,24 @@ def test2(net_test, args, save_path, epoch):
     print(line)
     f.write(line + '\n')
     
-    line = 'Distance average: (init, pred by corr, pred by neuralOpt)' + str(np.mean(init_dis)) + ' ' + str(np.mean(distance))
+    line = 'Distance average: (init, pred by corr, pred by neuralOpt)' + str(np.mean(init_dis)) + ' ' + str(np.mean(distance)) + ' ' + str(np.mean(distanc_neuralOpt))
     print(line)
     f.write(line + '\n')
-    line = 'Distance median: (init, pred by corr, pred by neuralOpt)' + str(np.median(init_dis)) + ' ' + str(np.median(distance))
-    print(line)
-    f.write(line + '\n')
-
-    line = 'Lateral average: (init, pred by corr, pred by neuralOpt)' + str(np.mean(np.abs(gt_lats))) + ' ' + str(np.mean(diff_lats))
-    print(line)
-    f.write(line + '\n')
-    line = 'Lateral median: (init, pred by corr, pred by neuralOpt)' + str(np.median(np.abs(gt_lats))) + ' ' + str(np.median(diff_lats))
+    line = 'Distance median: (init, pred by corr, pred by neuralOpt)' + str(np.median(init_dis)) + ' ' + str(np.median(distance)) + ' ' + str(np.median(distanc_neuralOpt))
     print(line)
     f.write(line + '\n')
 
-    line = 'Longitudinal average: (init, pred by corr, pred by neuralOpt)' + str(np.mean(np.abs(gt_lons))) + ' ' + str(np.mean(diff_lons))
+    line = 'Lateral average: (init, pred by corr, pred by neuralOpt)' + str(np.mean(np.abs(gt_lats))) + ' ' + str(np.mean(diff_lats)) + ' ' + str(np.mean(diff_lats_neuralOpt))
     print(line)
     f.write(line + '\n')
-    line = 'Longitudinal median: (init, pred by corr, pred by neuralOpt)' + str(np.median(np.abs(gt_lons))) + ' ' + str(np.median(diff_lons))
+    line = 'Lateral median: (init, pred by corr, pred by neuralOpt)' + str(np.median(np.abs(gt_lats))) + ' ' + str(np.median(diff_lats)) + ' ' + str(np.median(diff_lats_neuralOpt))
+    print(line)
+    f.write(line + '\n')
+
+    line = 'Longitudinal average: (init, pred by corr, pred by neuralOpt)' + str(np.mean(np.abs(gt_lons))) + ' ' + str(np.mean(diff_lons)) + ' ' + str(np.mean(diff_lons_neuralOpt))
+    print(line)
+    f.write(line + '\n')
+    line = 'Longitudinal median: (init, pred by corr, pred by neuralOpt)' + str(np.median(np.abs(gt_lons))) + ' ' + str(np.median(diff_lons)) + ' ' + str(np.median(diff_lons_neuralOpt))
     print(line)
     f.write(line + '\n')
 
@@ -613,10 +624,10 @@ def test2(net_test, args, save_path, epoch):
     for idx in range(len(metrics)):
         pred = np.sum(distance < metrics[idx]) / distance.shape[0] * 100
         init = np.sum(init_dis < metrics[idx]) / init_dis.shape[0] * 100
-        # pred_opt = np.sum(distanc_neuralOpt < metrics[idx]) / distanc_neuralOpt.shape[0] * 100
+        pred_opt = np.sum(distanc_neuralOpt < metrics[idx]) / distanc_neuralOpt.shape[0] * 100
 
         line = 'distance within ' + str(metrics[idx]) + ' meters (init, pred by corr, pred by neuralOpt): ' + str(
-            init) + ' ' + str(pred) + ' '
+            init) + ' ' + str(pred) + ' ' + str(pred_opt)
         print(line)
         f.write(line + '\n')
 
@@ -626,20 +637,20 @@ def test2(net_test, args, save_path, epoch):
     for idx in range(len(metrics)):
         pred = np.sum(diff_lats < metrics[idx]) / diff_lats.shape[0] * 100
         init = np.sum(np.abs(gt_lats) < metrics[idx]) / gt_lats.shape[0] * 100
-        # pred_opt = np.sum(diff_lats_neuralOpt < metrics[idx]) / diff_lats_neuralOpt.shape[0] * 100
+        pred_opt = np.sum(diff_lats_neuralOpt < metrics[idx]) / diff_lats_neuralOpt.shape[0] * 100
 
         line = 'lateral within ' + str(metrics[idx]) + ' meters (init, pred by corr, pred by neuralOpt): ' + str(
-            init) + ' ' + str(pred) + ' '
+            init) + ' ' + str(pred) + ' ' + str(pred_opt)
         print(line)
         f.write(line + '\n')
 
     for idx in range(len(metrics)):
         pred = np.sum(diff_lons < metrics[idx]) / diff_lons.shape[0] * 100
         init = np.sum(np.abs(gt_lons) < metrics[idx]) / gt_lons.shape[0] * 100
-        # pred_opt = np.sum(diff_lons_neuralOpt < metrics[idx]) / diff_lons_neuralOpt.shape[0] * 100
+        pred_opt = np.sum(diff_lons_neuralOpt < metrics[idx]) / diff_lons_neuralOpt.shape[0] * 100
 
         line = 'longitudinal within ' + str(metrics[idx]) + ' meters (init, pred by corr, pred by neuralOpt): ' + str(
-            init) + ' ' + str(pred) + ' '
+            init) + ' ' + str(pred) + ' ' + str(pred_opt)
         print(line)
         f.write(line + '\n')
 
@@ -662,69 +673,39 @@ def test2(net_test, args, save_path, epoch):
 
 def train(net, args, save_path, name_path):
     bestRankResult = 0.0
+
+    if args.share:
+        # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.FeatureForT.parameters())
+        # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.dino_feat.parameters())
+        # params = net.FeatureForT.parameters()
+        params = list(net.dpt.parameters()) + list(net.FuseNet_feat.parameters()) + list(net.FuseNet_conf.parameters())
+    else:
+        params = list(net.GrdFeatureForT.parameters()) + list(net.SatFeatureForT.parameters())
     
-    # optimizer = optim.Adam(net.parameters(), lr=base_lr)
-    if args.stage == 0:
-        if args.rotation_range == 0:
-            params = net.SatFeatureNet.parameters()
-        else:
-            params = list(net.SatFeatureNet.parameters()) + list(net.TransRefine.parameters())
-        optimizer = optim.Adam(params, lr=1e-4)
-    elif args.stage == 1 or args.stage == 3:
+    # base_lr = 6.25e-05
+    # base_lr = base_lr * ((1.0 - float(epoch) / 10.0) ** (2.0))
+    # optimizer = optim.AdamW(params, lr= 6.25e-5, weight_decay=5e-4, eps=1e-8)
+    optimizer = optim.AdamW(params, lr= 6.25e-5, weight_decay=5e-3, eps=1e-8)
+    # TODO: change strategy to linear
+    scale = float(args.batch_size / 8)
+    scheduler = OneCycleLR(optimizer, 
+                            max_lr=1e-4,  # 6.25e-5
+                            steps_per_epoch=int(2456 / scale), 
+                            epochs=args.epochs, # 5
+                            anneal_strategy='cos',
+                            pct_start=0.05, # 0.005
+                            cycle_momentum=False,
+                            )
 
-        if args.share:
-            # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.FeatureForT.parameters())
-            # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.dino_feat.parameters())
-            # params = net.FeatureForT.parameters()
-            params = net.dpt.parameters()
-        else:
-            params = list(net.GrdFeatureForT.parameters()) + list(net.SatFeatureForT.parameters())
-        
-        # base_lr = 6.25e-05
-        # base_lr = base_lr * ((1.0 - float(epoch) / 10.0) ** (2.0))
-        # optimizer = optim.AdamW(params, lr= 6.25e-5, weight_decay=5e-4, eps=1e-8)
-        optimizer = optim.AdamW(params, lr= 6.25e-5, weight_decay=5e-3, eps=1e-8)
-        # TODO: change strategy to linear
-        scale = float(args.batch_size / 8)
-        scheduler = OneCycleLR(optimizer, 
-                                max_lr=6.25e-5,  # 6.25e-5
-                                steps_per_epoch=int(2456 / scale), 
-                                epochs=args.epochs, # 5
-                                anneal_strategy='cos',
-                                pct_start=0.05, # 0.005
-                                cycle_momentum=False,
-                                )
-
-    elif args.stage == 4:
-        params = list(net.feat_gaussian_encoder.parameters()) + list(net.dpt.parameters())
-        optimizer = optim.AdamW(params, lr= 6.25e-5, weight_decay=5e-3, eps=1e-8)
-        # TODO: change strategy to linear
-        scale = float(args.batch_size / 8)
-        scheduler = OneCycleLR(optimizer, 
-                                max_lr=1.25e-4,  # 6.25e-5
-                                steps_per_epoch=int(2456 / scale), 
-                                epochs=args.epochs, # 5
-                                anneal_strategy='cos',
-                                pct_start=0.05, # 0.005
-                                cycle_momentum=False,
-                                )
-        # scheduler = torch.optim.lr_scheduler.LinearLR(
-        #     optimizer,
-        #     1 / 2000,
-        #     1,
-        #     total_iters=2000,
-        # )
-
-    elif args.stage == 2:
-        params = net.gaussian_encoder.parameters()
-        optimizer = optim.Adam(params, lr=1e-4)
-    
     time_start = time.time()
     for epoch in range(args.resume, args.epochs):
         net.train()
-        trainloader = load_train_data(args.batch_size, args.shift_range_lat, args.shift_range_lon, args.rotation_range,
-                                      weak_supervise=True, train_noisy=False, stage=args.stage,
-                                      data_amount=args.supervise_amount)
+        trainloader = load_train_data(args.batch_size, 
+                                      args.shift_range_lat, 
+                                      args.shift_range_lon, 
+                                      args.rotation_range,
+                                      sequence=args.sequence
+                                      )
 
         print('batch_size:', args.batch_size, '\n num of batches:', len(trainloader))
         
@@ -732,132 +713,48 @@ def train(net, args, save_path, name_path):
         
         for Loop, Data in enumerate(trainloader, 0):
             optimizer.zero_grad()
-            sat_align_cam, sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_depth = [item.to(device) for item in Data[:8]]
+            sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, loc_shift_left, heading_shift_left, real_gps = [item.to(device) for item in Data[:-1]]
 
             sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, mask_dict, shift_lats, shift_lons, thetas, render_loss = \
-                net(sat_align_cam, sat_map, grd_left_imgs, grd_depth, left_camera_k, gt_heading, gt_shift_u, gt_shift_v, loop=Loop, save_dir=save_path)
-
-            if args.stage == 0:
-                opt_loss, loss_decrease, shift_lat_decrease, shift_lon_decrease, thetas_decrease, loss_last, \
-                    shift_lat_last, shift_lon_last, theta_last, \
-                    = loss_func(shift_lats, shift_lons, thetas, gt_shift_v[:, 0], gt_shift_u[:, 0], gt_heading[:, 0],
-                                torch.exp(-net.coe_R), torch.exp(-net.coe_R), torch.exp(-net.coe_R))
+                net(sat_map, grd_left_imgs, left_camera_k, gt_shift_u, gt_shift_v, gt_heading, loc_shift_left, heading_shift_left)
 
 
-                corr_maps = corr_for_accurate_translation_supervision(sat_feat_dict, sat_conf_dict,
-                                                             g2s_feat_dict, g2s_conf_dict, args)
+            
+            gt_heading = gt_heading[:,:1]
+            corr_maps = batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, masks=mask_dict)
+            corr_loss, GPS_loss = Weakly_supervised_loss_w_GPS_error(corr_maps, gt_shift_u, gt_shift_v,
+                                                                        gt_heading,
+                                                                        args,
+                                                                        net.meters_per_pixel,
+                                                                        args.GPS_error)
 
-                corr_loss = GT_triplet_loss(corr_maps, gt_shift_u, gt_shift_v, gt_heading, args, net.meters_per_pixel)
+            loss = corr_loss + GPS_loss
 
-                if args.rotation_range == 0:
-                    loss = corr_loss
-                else:
-                    loss = opt_loss + \
-                           corr_loss * torch.exp(-net.coe_T) + \
-                           net.coe_T + net.coe_R
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()  # This step is responsible for updating weights
-
-                if Loop % 10 == 9:  #
-                    time_end = time.time()
-
-                    print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
-                          ' DeltaR: ' + str(np.round(thetas_decrease.item(), decimals=2)) +
-                          ' FinalR: ' + str(np.round(theta_last.item(), decimals=2)) +
-                          ' triplet loss: ' + str(np.round(corr_loss.item(), decimals=4)) +
-                          ' Time: ' + str(time_end - time_start))
-
-                    time_start = time_end
-
-            elif args.stage == 2:
-                global_step = global_step + args.batch_size
-                _, _, _, H, W = g2s_feat_dict.color.shape
-                grd_depth = F.interpolate(grd_depth.unsqueeze(1), (H, W), mode='bilinear', align_corners=True).squeeze(1)
-                grd_left_imgs = F.interpolate(grd_left_imgs, (H, W), mode='bilinear', align_corners=True)
-                depth_l1_loss = F.l1_loss(g2s_feat_dict.depth.squeeze(1), grd_depth, reduction='mean')
-                rgb_mse_loss = F.mse_loss(g2s_feat_dict.color.squeeze(1), grd_left_imgs, reduction='mean')
-                
-                # # 假设 g2s_feat_dict.depth.squeeze(1) 和 grd_depth 的形状均为 (B, H, W)
-                # pred = g2s_feat_dict.depth.squeeze(1)  # 预测深度，形状 (B, H, W)
-                # gt = grd_depth                        # ground truth 深度，形状 (B, H, W)
-
-                # B, H, W = pred.shape
-                # total_pixels = B * H * W
-                # sample_fraction = 0.5  # 例如采样 50% 的像素，可以根据需要调整
-                # sample_size = int(total_pixels * sample_fraction)
-
-                # # 生成随机采样的索引（在总像素数范围内）
-                # indices = torch.randperm(total_pixels, device=pred.device)[:sample_size]
-
-                # # 将两个张量展平，得到形状 (B*H*W,)
-                # pred_flat = pred.view(-1)
-                # gt_flat = gt.view(-1)
-
-                # # 计算选中像素的 L1 损失
-                # depth_l1_loss = F.l1_loss(pred_flat[indices], gt_flat[indices], reduction='mean')
-                
-                gt_theta = gt_heading[:, 0]
-                thetas_delta0 = torch.abs(thetas - gt_theta[:, None, None])  # [B, N_iters, level]
-                thetas_delta = torch.mean(thetas_delta0, dim=0)
-                if global_step > 20000:
-                    lpips_loss = net.lpips.forward(g2s_feat_dict.color.squeeze(1).clip(min=0, max=1), grd_left_imgs, normalize=True).mean()
-                else:
-                    lpips_loss = torch.tensor(0, dtype=torch.float32, device=grd_left_imgs.device)
-                loss = depth_l1_loss + rgb_mse_loss * 20 + lpips_loss
-                # loss = rgb_mse_loss * 20 + lpips_loss
-                # loss = depth_l1_loss
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                if Loop % 10 == 9:
-                    time_end = time.time()
-
-                    print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
-                        ' TheteLoss: ' + str(np.round(thetas_delta[-1, -1].item(), decimals=4)) +
-                        ' TotalLoss: ' + str(loss.item()) +
+            R_err = torch.abs(thetas[:, -1, -1].reshape(-1) - gt_heading.reshape(-1)).mean() * args.rotation_range
+            # optimizer2.zero_grad()
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            # optimizer2.step()
+            # 打印每个参数的梯度
+            # for name, param in net.named_parameters():
+            #     if param.grad is not None:
+            #         # 检查梯度张量中是否存在非零元素
+            #         if (param.grad != 0).any():
+            #             print(name)
+            # num_params = sum(p.numel() for p in net.dpt.parameters() if p.requires_grad)
+            # print(f"========Number of trainable parameters: {num_params}==========") 
+            if Loop % 10 == 9:  #
+                time_end = time.time()
+                current_lr = scheduler.get_last_lr()[0]
+                print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
+                        ' R error: ' + str(np.round(R_err.item(), decimals=4)) +
+                        ' triplet loss: ' + str(np.round(corr_loss.item(), decimals=4)) +
+                        ' GPS err loss: ' + str(np.round(GPS_loss.item(), decimals=4)) +
+                        f' Learning Rate: {current_lr:.9f}' +
                         ' Time: ' + str(time_end - time_start))
-                    
-                    time_start = time_end
 
-            elif args.stage == 1 or args.stage == 3 or args.stage == 4:
-                
-                corr_maps = batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, masks=mask_dict)
-                corr_loss, GPS_loss = Weakly_supervised_loss_w_GPS_error(corr_maps, gt_shift_u, gt_shift_v,
-                                                                         gt_heading,
-                                                                         args,
-                                                                         net.meters_per_pixel,
-                                                                         args.GPS_error)
-
-                loss = corr_loss + GPS_loss*0
-
-                R_err = torch.abs(thetas[:, -1, -1].reshape(-1) - gt_heading.reshape(-1)).mean() * args.rotation_range
-
-                # optimizer2.zero_grad()
-                loss.backward()
-                optimizer.step()
-                scheduler.step()
-                # optimizer2.step()
-                # 打印每个参数的梯度
-                # for name, param in net.named_parameters():
-                #     if param.grad is not None:
-                #         # 检查梯度张量中是否存在非零元素
-                #         if (param.grad != 0).any():
-                #             print(name)
-                # num_params = sum(p.numel() for p in net.dpt.parameters() if p.requires_grad)
-                # print(f"========Number of trainable parameters: {num_params}==========") 
-                if Loop % 10 == 9:  #
-                    time_end = time.time()
-                    current_lr = scheduler.get_last_lr()[0]
-                    print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
-                          ' R error: ' + str(np.round(R_err.item(), decimals=4)) +
-                          ' triplet loss: ' + str(np.round(corr_loss.item(), decimals=4)) +
-                          ' GPS err loss: ' + str(np.round(GPS_loss.item(), decimals=4)) +
-                          f' Learning Rate: {current_lr:.9f}' +
-                          ' Time: ' + str(time_end - time_start))
-
-                    time_start = time_end
+                time_start = time_end
 
         print('Save Model ...')
         if args.stage == 0 or args.stage == 2:
@@ -925,7 +822,8 @@ def parse_args():
     parser.add_argument('--supervise_amount', type=float, default=1.0,
                         help='0.1, 0.2, 0.3, ..., 1')
     parser.add_argument('--name', type=str, default='test', help='')
-    
+    parser.add_argument('--sequence', type=int, default=2, help='')
+
     args = parser.parse_args()
 
     return args
@@ -982,7 +880,8 @@ if __name__ == '__main__':
     net.to(device)
 
     if args.test:
-        path = 'ModelsKitti/3DoF/Stage4/lat20.0m_lon20.0m_rot0.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_op_as_confidence/model_0.pth'
+        # path = '/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage3/lat20.0m_lon20.0m_rot0.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32_forward_project_dino_GPS/model_0.pth'
+        path = '/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage3/lat20.0m_lon20.0m_rot0.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32_seq_GPS/model_0.pth'
         net.load_state_dict(torch.load(path), strict=False)
         print("resume from " + path)
         # test1(net, args, save_path, epoch=2)
@@ -1001,30 +900,31 @@ if __name__ == '__main__':
             net.load_state_dict(torch.load(path), strict=False)
             print("resume from " + path)
         
-        elif (args.stage == 1) > 0:
+        elif (args.stage == 1) and args.rotation_range > 0:
 
             net.load_state_dict(torch.load(
                 os.path.join(save_path.replace('Stage1', 'Stage2').replace(args.proj, 'geo').replace(f'Level{args.level}', 'Level1'), 'model_2.pth')), strict=False)
             print("load pretrained model from Stage2:")
             print(os.path.join(save_path.replace('Stage1', 'Stage2'),
                                'model_2.pth'))
-        elif (args.stage == 3) > 0:
+        elif (args.stage == 3):
             load_idx = 3
             path = '/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage2/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32'
-            # path = '/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage2/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32_no_depth'
+            # path = '/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage2/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32_random_depth'
             net.load_state_dict(torch.load(
                     os.path.join(path, f'model_{load_idx}.pth')), strict=False)
             print("load pretrained model from Stage2:")
             print(os.path.join(path, f'model_{load_idx}.pth'))
-        elif (args.stage == 2) > 0:
+        elif (args.stage == 2) and args.rotation_range > 0:
             net.load_state_dict(torch.load('/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage0/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32/model_2.pth'), strict=False)
             print("load pretrained model from Stage0:")
             print('/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage0/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32/model_2.pth')
         
-        elif (args.stage == 4) > 0:
-            net.load_state_dict(torch.load('/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage0/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32/model_2.pth'), strict=False)
-            print("load pretrained model from Stage0:")
-            print('/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage0/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32/model_2.pth')
+        elif (args.stage == 4) and args.rotation_range > 0:
+            path = '/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage3/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32_dpt_best/model_2.pth'
+            net.load_state_dict(torch.load(path), strict=False)
+            print("load pretrained model from Stage3:")
+            print(path)
         
         if args.visualize:
             net.load_state_dict(torch.load(os.path.join(save_path, 'model_2.pth')), strict=False)

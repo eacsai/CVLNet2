@@ -4,15 +4,15 @@ from typing import Literal, Optional, Tuple, Union
 
 import torch
 
-# from diff_gaussian_tw import (
-#     GaussianRasterizationSettings,
-#     GaussianRasterizer,
-# )
-
-from feat_gaussian import (
+from pano_gaussian_feat import (
     GaussianRasterizationSettings,
     GaussianRasterizer,
 )
+
+# from feat_gaussian import (
+#     GaussianRasterizationSettings,
+#     GaussianRasterizer,
+# )
 
 from einops import einsum, rearrange, repeat
 from jaxtyping import Float
@@ -90,49 +90,24 @@ def render_cuda(
     background_color: Float[Tensor, "batch 3"],
     gaussian_means: Float[Tensor, "batch gaussian 3"],
     gaussian_covariances: Float[Tensor, "batch gaussian 3 3"],
-    gaussian_color_sh_coefficients: Union[Float[Tensor, "batch gaussian 3 d_sh"], None],
+    gaussian_color: Union[Float[Tensor, "batch gaussian 3"], None],
     gaussian_opacities: Float[Tensor, "batch gaussian"],
     gaussian_feature: Union[Float[Tensor, "batch gaussian channels"], None] = None,
     gaussian_confidence: Union[Float[Tensor, "batch gaussian"], None] = None,
     scale_invariant: bool = True,
     use_sh: bool = True
 ) -> RenderOutput:
-    assert gaussian_color_sh_coefficients is not None or gaussian_feature is not None
+    assert gaussian_color is not None or gaussian_feature is not None
 
     # Make sure everything is in a range where numerical issues don't appear.
-    if scale_invariant:
-        scale = 1 / near
-        extrinsics = extrinsics.clone()
-        extrinsics[..., :3, 3] = extrinsics[..., :3, 3] * scale[:, None]
-        gaussian_covariances = gaussian_covariances * (scale[:, None, None, None] ** 2)
-        gaussian_means = gaussian_means * scale[:, None, None]
-        near = near * scale
-        far = far * scale
-
-    color_sh_degree = 0
-    shs = None
-    features = None
-    confidence = None
-    colors_precomp = None
-    if use_sh:
-        if gaussian_color_sh_coefficients is not None:
-            color_sh_degree = isqrt(gaussian_color_sh_coefficients.shape[-1]) - 1
-            shs = rearrange(gaussian_color_sh_coefficients, "b g xyz n -> b g n xyz").contiguous()
-        if gaussian_feature is not None:
-            # TODO implement general feature SH conversion in CUDA rasterizer
-            # campos = extrinsics[:, :3, 3]
-            # dir_pp = gaussian_means - campos.unsqueeze(1)
-            # dir_pp_normalized = dir_pp/dir_pp.norm(dim=-1, keepdim=True)
-            features = gaussian_feature
-        if gaussian_confidence is not None:
-            confidence = gaussian_confidence
-    else:
-        if gaussian_color_sh_coefficients is not None:
-            colors_precomp = gaussian_color_sh_coefficients[..., 0]
-        if gaussian_feature is not None:
-            features = gaussian_feature
-        if gaussian_confidence is not None:
-            confidence = gaussian_confidence
+    # if scale_invariant:
+    #     scale = 1 / near
+    #     extrinsics = extrinsics.clone()
+    #     extrinsics[..., :3, 3] = extrinsics[..., :3, 3] * scale[:, None]
+    #     gaussian_covariances = gaussian_covariances * (scale[:, None, None, None] ** 2)
+    #     gaussian_means = gaussian_means * scale[:, None, None]
+    #     near = near * scale
+    #     far = far * scale
 
     b, _, _ = extrinsics.shape
     h, w = image_shape
@@ -168,7 +143,7 @@ def render_cuda(
             scale_modifier=1.0,
             viewmatrix=view_matrix[i],
             projmatrix=full_projection[i],
-            sh_degree=color_sh_degree,
+            sh_degree=0,
             campos=extrinsics[i, :3, 3],
             prefiltered=False,  # This matches the original usage.
             debug=False,
@@ -180,11 +155,11 @@ def render_cuda(
         image, feature_map, confidence_map, mask, depth_map, _ = rasterizer(
             means3D=gaussian_means[i],
             means2D=mean_gradients,
-            shs=shs[i] if shs is not None else None,
-            colors_precomp=colors_precomp[i] if colors_precomp is not None else None,
-            features=features[i] if features is not None else None,
-            confidence=confidence[i] if confidence is not None else None,
-            opacities=gaussian_opacities[i, ..., None],
+            shs=None,
+            colors_precomp=gaussian_color[i],
+            features=gaussian_feature[i] if gaussian_feature is not None else None,
+            confidence=gaussian_confidence[i] if gaussian_confidence is not None else None,
+            opacities=gaussian_opacities[i],
             cov3D_precomp=gaussian_covariances[i, :, row, col],
         )
         all_images.append(image)
@@ -210,11 +185,10 @@ def render_cuda_orthographic(
     background_features: Float[Tensor, "batch 3"],
     gaussian_means: Float[Tensor, "batch gaussian 3"],
     gaussian_covariances: Float[Tensor, "batch gaussian 3 3"],
-    gaussian_color_sh_coefficients: Union[Float[Tensor, "batch gaussian 3 d_sh"], None],
-    gaussian_opacities: Float[Tensor, "batch gaussian"],
+    gaussian_color: Union[Float[Tensor, "batch gaussian 3"], None],
+    gaussian_opacities: Float[Tensor, "batch gaussian channels"],
     gaussian_feature: Union[Float[Tensor, "batch gaussian channels"], None] = None,
-    gaussian_confidence: Union[Float[Tensor, "batch gaussian"], None] = None,
-    gaussian_rgbs: Union[Float[Tensor, "batch gaussian 3"], None] = None,
+    gaussian_confidence: Union[Float[Tensor, "batch gaussian channels"], None] = None,
     fov_degrees: float = 0.1,
     use_sh: bool = True,
     dump: Union[dict, None] = None,
@@ -223,31 +197,7 @@ def render_cuda_orthographic(
     h, w = image_shape
     
     color_sh_degree = 0
-    shs = None
-    features = None
-    confidence = None
-    colors_precomp = None
-    if use_sh:
-        if gaussian_color_sh_coefficients is not None:
-            color_sh_degree = isqrt(gaussian_color_sh_coefficients.shape[-1]) - 1
-            shs = rearrange(gaussian_color_sh_coefficients, "b g xyz n -> b g n xyz").contiguous()
-        if gaussian_feature is not None:
-            # TODO implement general feature SH conversion in CUDA rasterizer
-            # campos = extrinsics[:, :3, 3]
-            # dir_pp = gaussian_means - campos.unsqueeze(1)
-            # dir_pp_normalized = dir_pp/dir_pp.norm(dim=-1, keepdim=True)
-            features = gaussian_feature
-        if gaussian_confidence is not None:
-            confidence = gaussian_confidence
-        if gaussian_rgbs is not None:
-            colors_precomp = gaussian_rgbs
-    else:
-        if gaussian_rgbs is not None:
-            colors_precomp = gaussian_rgbs
-        if gaussian_feature is not None:
-            features = gaussian_feature
-        if gaussian_confidence is not None:
-            confidence = gaussian_confidence
+
     # Create fake "orthographic" projection by moving the camera back and picking a
     # small field of view.
     fov_x = torch.tensor(fov_degrees, device=extrinsics.device).deg2rad()
@@ -261,13 +211,6 @@ def render_cuda_orthographic(
     move_back[2, 3] = -distance_to_near
     extrinsics = extrinsics @ move_back
 
-    # Escape hatch for visualization/figures.
-    if dump is not None:
-        dump["extrinsics"] = extrinsics
-        dump["fov_x"] = fov_x
-        dump["fov_y"] = fov_y
-        dump["near"] = near
-        dump["far"] = far
 
     projection_matrix = get_projection_matrix(
         near, far, repeat(fov_x, "-> b", b=b), fov_y
@@ -298,7 +241,7 @@ def render_cuda_orthographic(
             scale_modifier=1.0,
             viewmatrix=view_matrix[i],
             projmatrix=full_projection[i],
-            sh_degree=color_sh_degree,
+            sh_degree=0,
             campos=extrinsics[i, :3, 3],
             prefiltered=False,  # This matches the original usage.
             debug=False,
@@ -310,11 +253,11 @@ def render_cuda_orthographic(
         image, feature_map, confidence_map, mask, depth_map, _ = rasterizer(
             means3D=gaussian_means[i],
             means2D=mean_gradients,
-            shs=shs[i] if shs is not None else None,
-            colors_precomp=colors_precomp[i] if colors_precomp is not None else None,
-            features=features[i] if features is not None else None,
-            confidence=confidence[i] if confidence is not None else None,
-            opacities=gaussian_opacities[i, ..., None],
+            shs=None,
+            colors_precomp=gaussian_color[i],
+            features=gaussian_feature[i] if gaussian_feature is not None else None,
+            confidence=gaussian_confidence[i] if gaussian_confidence is not None else None,
+            opacities=gaussian_opacities[i],
             cov3D_precomp=gaussian_covariances[i, :, row, col],
         )
         all_images.append(image)

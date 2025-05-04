@@ -94,7 +94,7 @@ class GaussianAdapter(nn.Module):
         confidence = confidence.broadcast_to((*opacities.shape, 1))
 
         # Create world-space covariance matrices.
-        covariances = build_covariance(scales, rotations)
+        covariances = build_covariance(scales, rotations) # [8, 1, 16384, 3, 3], [8, 1, 16384, 1, 4]
         c2w_rotations = extrinsics[..., :3, :3]
         # covariances = c2w_rotations @ covariances @ c2w_rotations.transpose(-1, -2)
 

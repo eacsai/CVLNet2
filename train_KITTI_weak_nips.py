@@ -1,7 +1,7 @@
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 import torch
 import torch.nn as nn
@@ -17,7 +17,7 @@ to_pil_img = transforms.ToPILImage()
 ssl._create_default_https_context = ssl._create_unverified_context  # for downloading pretrained VGG weights
 
 # from models_ford import loss_func, loss_func_l2
-from models.models_kitti import Model, batch_wise_cross_corr, corr_for_translation, weak_supervise_loss, \
+from models.models_kitti_nips import Model, batch_wise_cross_corr, corr_for_translation, weak_supervise_loss, \
     Weakly_supervised_loss_w_GPS_error, corr_for_accurate_translation_supervision, GT_triplet_loss, loss_func
 
 import numpy as np
@@ -670,30 +670,6 @@ def train(net, args, save_path, name_path):
         else:
             params = list(net.SatFeatureNet.parameters()) + list(net.TransRefine.parameters())
         optimizer = optim.Adam(params, lr=1e-4)
-    elif args.stage == 1 or args.stage == 3:
-
-        if args.share:
-            # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.FeatureForT.parameters())
-            # params = list(net.gaussian_encoder.parameters()) + list(net.grd_decoder.parameters()) + list(net.dino_feat.parameters())
-            # params = net.FeatureForT.parameters()
-            params = net.dpt.parameters()
-        else:
-            params = list(net.GrdFeatureForT.parameters()) + list(net.SatFeatureForT.parameters())
-        
-        # base_lr = 6.25e-05
-        # base_lr = base_lr * ((1.0 - float(epoch) / 10.0) ** (2.0))
-        # optimizer = optim.AdamW(params, lr= 6.25e-5, weight_decay=5e-4, eps=1e-8)
-        optimizer = optim.AdamW(params, lr= 6.25e-5, weight_decay=5e-3, eps=1e-8)
-        # TODO: change strategy to linear
-        scale = float(args.batch_size / 8)
-        scheduler = OneCycleLR(optimizer, 
-                                max_lr=6.25e-5,  # 6.25e-5
-                                steps_per_epoch=int(2456 / scale), 
-                                epochs=args.epochs, # 5
-                                anneal_strategy='cos',
-                                pct_start=0.05, # 0.005
-                                cycle_momentum=False,
-                                )
 
     elif args.stage == 4:
         params = list(net.feat_gaussian_encoder.parameters()) + list(net.dpt.parameters())
@@ -701,7 +677,7 @@ def train(net, args, save_path, name_path):
         # TODO: change strategy to linear
         scale = float(args.batch_size / 8)
         scheduler = OneCycleLR(optimizer, 
-                                max_lr=1.25e-4,  # 6.25e-5
+                                max_lr=6.25e-5,  # 6.25e-5
                                 steps_per_epoch=int(2456 / scale), 
                                 epochs=args.epochs, # 5
                                 anneal_strategy='cos',
@@ -714,10 +690,6 @@ def train(net, args, save_path, name_path):
         #     1,
         #     total_iters=2000,
         # )
-
-    elif args.stage == 2:
-        params = net.gaussian_encoder.parameters()
-        optimizer = optim.Adam(params, lr=1e-4)
     
     time_start = time.time()
     for epoch in range(args.resume, args.epochs):
@@ -997,34 +969,15 @@ if __name__ == '__main__':
     else:
 
         if args.resume:
-            path = '/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage3/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32_dpt_best/model_2.pth'
+            path = 'ModelsKitti/3DoF/Stage4/lat20.0m_lon20.0m_rot0.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_op_as_confidence/model_0.pth'
             net.load_state_dict(torch.load(path), strict=False)
             print("resume from " + path)
         
-        elif (args.stage == 1) > 0:
-
-            net.load_state_dict(torch.load(
-                os.path.join(save_path.replace('Stage1', 'Stage2').replace(args.proj, 'geo').replace(f'Level{args.level}', 'Level1'), 'model_2.pth')), strict=False)
-            print("load pretrained model from Stage2:")
-            print(os.path.join(save_path.replace('Stage1', 'Stage2'),
-                               'model_2.pth'))
-        elif (args.stage == 3) > 0:
-            load_idx = 3
-            path = '/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage2/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32'
-            # path = '/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage2/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32_no_depth'
-            net.load_state_dict(torch.load(
-                    os.path.join(path, f'model_{load_idx}.pth')), strict=False)
-            print("load pretrained model from Stage2:")
-            print(os.path.join(path, f'model_{load_idx}.pth'))
-        elif (args.stage == 2) > 0:
-            net.load_state_dict(torch.load('/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage0/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32/model_2.pth'), strict=False)
-            print("load pretrained model from Stage0:")
-            print('/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage0/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32/model_2.pth')
-        
         elif (args.stage == 4) > 0:
-            net.load_state_dict(torch.load('/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage0/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32/model_2.pth'), strict=False)
+            path = '/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage0/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32/model_2.pth'
+            net.load_state_dict(torch.load(path), strict=False)
             print("load pretrained model from Stage0:")
-            print('/home/qiwei/program/CVLNet2/ModelsKitti/3DoF/Stage0/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32/model_2.pth')
+            print(path)
         
         if args.visualize:
             net.load_state_dict(torch.load(os.path.join(save_path, 'model_2.pth')), strict=False)

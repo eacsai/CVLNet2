@@ -15,14 +15,13 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-root_dir = '/home/wangqw/video_dataset/KITTI' # '../../data/Kitti' # '../Data' #'..\\Data' #
+root_dir = '/data/dataset/KITTI' # '../../data/Kitti' # '../Data' #'..\\Data' #
 # root_dir = '/media/yujiao/6TB/dataset/Kitti1'
 
-test_csv_file_name = 'test.csv'
-ignore_csv_file_name = 'ignore.csv'
 satmap_dir = 'satmap'
-grdimage_dir = 'raw_data'
-left_color_camera_dir = 'image_02/data'  # 'image_02\\data' #
+grdimage_dir = 'depth_data'
+grd_depth_dir = 'image_02/grd_depth'  # 'image_02\\data' #
+left_color_camera_dir = 'image_02/grd_no_sky'  # 'image_02\\data' #
 right_color_camera_dir = 'image_03/data'  # 'image_03\\data' #
 oxts_dir = 'oxts/data'  # 'oxts\\data' #
 # depth_dir = 'depth/data_depth_annotated/train/'
@@ -73,7 +72,7 @@ class SatGrdDataset(Dataset):
             self.satmap_transform = transform[0]
             self.grdimage_transform = transform[1]
 
-        self.pro_grdimage_dir = 'raw_data'
+        self.pro_grdimage_dir = 'depth_data'
 
         self.satmap_dir = satmap_dir
 
@@ -315,7 +314,7 @@ class SatGrdDatasetTest(Dataset):
             self.satmap_transform = transform[0]
             self.grdimage_transform = transform[1]
 
-        self.pro_grdimage_dir = 'raw_data'
+        self.pro_grdimage_dir = 'depth_data'
 
         self.satmap_dir = satmap_dir
 
@@ -531,7 +530,7 @@ class SatGrdDatasetTest(Dataset):
 
         # gt_corr_x, gt_corr_y = self.generate_correlation_GTXY(gt_shift_x, gt_shift_y, theta)
                 
-        return sat_map, left_camera_k, grd_left_imgs, gt_shift_xs.float(), gt_shift_ys.float(), thetas.float(), locations.float(), heading_shift_left.float(), real_gps
+        return sat_map, left_camera_k, grd_left_imgs, gt_shift_xs.float(), gt_shift_ys.float(), thetas.float(), locations.float(), heading_shift_left.float(), real_gps, file_name
     
     # def generate_correlation_GTXY(self, gt_shift_x, gt_shift_y, gt_heading):
         
@@ -604,7 +603,7 @@ def load_test1_data(batch_size, shift_range_lat=20, shift_range_lon=20, rotation
     return test1_loader
 
 
-def load_test2_data(batch_size, shift_range_lat=20, shift_range_lon=20, rotation_range=10):
+def load_test2_data(batch_size, shift_range_lat=20, shift_range_lon=20, rotation_range=10, sequence=4):
     SatMap_process_sidelength = boost_utils.get_process_satmap_sidelength()
 
     satmap_transform = transforms.Compose([
@@ -628,7 +627,8 @@ def load_test2_data(batch_size, shift_range_lat=20, shift_range_lon=20, rotation
                               transform=(satmap_transform, grdimage_transform),
                               shift_range_lat=shift_range_lat,
                               shift_range_lon=shift_range_lon,
-                              rotation_range=rotation_range)
+                              rotation_range=rotation_range,
+                              sequence=sequence)
 
     test2_loader = DataLoader(test2_set, batch_size=batch_size, shuffle=False, pin_memory=True,
                               num_workers=num_thread_workers, drop_last=False)

@@ -27,8 +27,8 @@ from matplotlib import colors
 from visualize import single_features_to_RGB, sat_features_to_RGB, visualize_1d_pca, sat_features_to_RGB_2D_PCA
 from gaussian.encoder import GaussianEncoder
 from gaussian.decoder import GrdDecoder
-from gaussian.encoder_feat import GaussianFeatEncoder
-from vis_gaussian import render_projections
+from gaussian.encoder_feat_nips import GaussianFeatEncoder
+from vis_gaussian_feat import render_projections
 from models.dino_fit import DINO
 from models.VGGW import L2_norm
 from models.bev_net import BEVNet
@@ -63,7 +63,7 @@ class Model(nn.Module):
 
         self.SatFeatureNet = VGGUnet(self.level, self.gs_channels)
         self.gaussian_encoder = GaussianEncoder(self.gs_channels[self.level[0] - 1])
-        self.feat_gaussian_encoder = GaussianFeatEncoder(self.gs_channels[self.level[0] - 1])
+        self.feat_gaussian_encoder = GaussianFeatEncoder()
         self.grd_decoder = GrdDecoder()
         self.lpips = LPIPS(net="vgg")
 
@@ -116,26 +116,6 @@ class Model(nn.Module):
         torch.autograd.set_detect_anomaly(True)
         # Running the forward pass with detection enabled will allow the backward pass to print the traceback of the forward operation that created the failing backward function.
         # Any backward computation that generate “nan” value will raise an error.
-        
-    def grd_feat_projection(self, grd_img_left, grd_feat, grd_conf, grd_depth, left_camera_k, deterministic=False):
-        # initial
-        self.camera_k = left_camera_k.clone()
-        self.camera_k[:, :1, :] = self.camera_k[:, :1, :] / grd_depth.shape[2]  # original size input into feature get network/ output of feature get network
-        self.camera_k[:, 1:2, :] = self.camera_k[:, 1:2, :] / grd_depth.shape[1]
-        self.camera_k = self.camera_k.unsqueeze(1)
-        self.extrinsics = torch.eye(4).to(grd_img_left.device).unsqueeze(0).repeat(grd_img_left.shape[0], 1, 1).unsqueeze(1)
-        # Encode the context images.
-        self.gaussians = self.gaussian_encoder(
-            self.grd_img_left,
-            grd_feat,
-            grd_conf, 
-            self.camera_k, 
-            self.extrinsics, 
-            self.near,
-            self.far, 
-            deterministic
-        )
-        return self.gaussians
     
     def grd_pure_feat_projection(self, grd_img_left, grd_feat, grd_depth, left_camera_k):
         # initial
@@ -535,139 +515,11 @@ class Model(nn.Module):
 
             return sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, self.masks, shift_lats, shift_lons, thetas, None
 
-        elif self.args.stage == 1:
-            decoder_grd = self.grd_projection(grd_img_left, grd_depth, left_camera_k)
-            grd_color = decoder_grd.color.clip(min=0, max=1) 
-            test_img = to_pil_image(grd_color[0])
-            test_img.save(f'grd_weak_maskfov1.png')
-            _, _, H, W = grd_color.shape
-            grd_depth_imgs = F.interpolate(grd_depth.unsqueeze(1), (H, W), mode='bilinear', align_corners=True).squeeze(1)
-            grd_left_imgs = F.interpolate(grd_img_left, (H, W), mode='bilinear', align_corners=True)
-            depth_l1_loss = F.l1_loss(decoder_grd.depth, grd_depth_imgs, reduction='mean')
-            rgb_mse_loss = F.mse_loss(decoder_grd.color, grd_left_imgs, reduction='mean')
-            lpips_loss = self.lpips.forward(grd_color, grd_left_imgs, normalize=True).mean()
-            render_loss = depth_l1_loss + rgb_mse_loss * 20 + lpips_loss
-            # ----------------- Rotation Stage ---------------------------
-            with torch.no_grad():
-                grd2sat_gaussian_color1, grd2sat_gaussian_feat1 = render_projections(self.gaussians, (512,512), extra_label='prob')
-                
-                sat_feat_dict_forR, sat_uncer_dict_forR = self.SatFeatureNet(sat_map)
-                grd_feat_dict_forR, grd_conf_dict_forR = self.SatFeatureNet(grd2sat_gaussian_color1)
-
-                if self.args.rotation_range > 0:
-                    shift_lats, shift_lons, thetas = self.NeuralOptimizer(grd_feat_dict_forR, sat_feat_dict_forR, B,
-                                                                          left_camera_k, ori_grdH, ori_grdW)
-                    heading = thetas[:, -1, -1:].detach()
-                else:
-                    heading = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
-                    shift_lats = None
-                    shift_lons = None
-
-            # ----------------- Translation Stage ---------------------------
-
-            grd2sat_gaussian_color2, grd2sat_gaussian_feat2 = render_projections(self.gaussians, (128,128), extra_label='prob', heading=heading)
-            test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
-            test_img.save(f'sat_weak_maskfov1.png')
-
-            # grd_origin, _, _, _ = self.project_grd_to_map(
-            #         grd_img_left, None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH,
-            #         ori_grdW,
-            #         require_jac=False)
-            # test_img = to_pil_image(grd_origin[0].clip(min=0, max=1))
-            # test_img.save(f'grd_origin.png')
-
-            # test_img = to_pil_image(sat_map[0].clip(min=0, max=1))
-            # test_img.save(f'origin_sat.png')
-
-            if self.args.share:
-                grd_feat_dict_forT, grd_conf_dict_forT = L2_norm(grd2sat_gaussian_feat2), torch.ones_like(grd2sat_gaussian_feat2, device=grd2sat_gaussian_feat2.device)
-                sat_feat_dict_forT, sat_conf_dict_forT = self.FeatureForT(sat_map)
-            else:
-                grd_feat_dict_forT, grd_conf_dict_forT = self.GrdFeatureForT(grd2sat_gaussian_color)
-                sat_feat_dict_forT, sat_conf_dict_forT = self.SatFeatureForT(sat_map)
-
-            grd_uv_dict = {}
-            mask_dict = {}
-            level = 1
-            # self.level = level
-            sat_feat = sat_feat_dict_forT[level]
-            satmap_sidelength = sat_feat.shape[-1]
-            XYZ_1 = self.sat2world(satmap_sidelength)                
-            uv, mask = self.World2GrdImgPixCoordinates(shift_u, shift_v, heading, XYZ_1, left_camera_k, ori_grdH, ori_grdW,
-                                                            ori_grdH, ori_grdW)
-            g2s_feat_dict[level] = grd_feat_dict_forT * mask.permute(0, 3, 1, 2)
-            g2s_conf_dict[level] = grd_conf_dict_forT * mask.permute(0, 3, 1, 2)
-            grd_uv_dict[level] = uv
-            mask_dict[level] = mask
-
-            for _, level in enumerate(self.level):
-
-                meter_per_pixel = self.meters_per_pixel[level]
-                sat_feat = sat_feat_dict_forT[level]
-
-                A = sat_feat.shape[-1]
-
-                crop_H = int(A - 20 * 3 / meter_per_pixel)
-                crop_W = int(A - 20 * 3 / meter_per_pixel)
-                g2s_feat = TF.center_crop(g2s_feat_dict[level], [crop_H, crop_W])
-
-                g2s_conf = TF.center_crop(g2s_conf_dict[level], [crop_H, crop_W])
-
-                g2s_feat_dict[level] = g2s_feat
-                g2s_conf_dict[level] = g2s_conf
-
-            return sat_feat_dict_forT, sat_conf_dict_forT, g2s_feat_dict, g2s_conf_dict, mask_dict, shift_lats, shift_lons, thetas, render_loss
-
-        elif self.args.stage == 2:
-
-            level = self.level[0]
-            # grd_feat_dict_forT, grd_conf_dict_forT = self.FeatureForT(grd_img_left)
-            self.grd_img_left = self.grd_img_left.unsqueeze(1)
-
-            grd_gaussian = self.grd_feat_projection(self.grd_img_left, None, None, grd_depth, left_camera_k)
-            
-            decoder_grd = self.grd_decoder.forward(
-                grd_gaussian,     # Sample from variational Gaussians
-                self.extrinsics,
-                self.camera_k,
-                self.near,
-                self.far,
-                (64, 256),
-            )
-
-            grd2sat_gaussian_color, _, _ = render_projections(grd_gaussian, (512,512))
-
-            # test_img = to_pil_image(grd2sat_gaussian_color[0].clip(min=0, max=1))
-            # test_img.save(f'sat_weak_ori_128.png')
-            # test_img = to_pil_image(self.grd_img_left[0,0].clip(min=0, max=1))
-            # test_img.save(f'grd_ori_128.png')
-            # test_img = to_pil_image(decoder_grd.color[0,0].clip(min=0, max=1))
-            # test_img.save(f'grd_weak_ori_128.png')
-            # grd_depth = F.interpolate(grd_depth.unsqueeze(1), (64, 256), mode='bilinear', align_corners=True).squeeze(1)
-            # onlyDepth(grd_depth, 'grd_depth_ori_128.png')
-            # onlyDepth(decoder_grd.depth[0], 'grd_depth_128.png')
-            # with torch.no_grad():
-            #     if self.args.rotation_range > 0:
-            #         sat_feat_dict, sat_conf_dict = self.SatFeatureNet(sat_map)
-            #         over_feat_dict, over_conf_dict = self.SatFeatureNet(grd2sat_gaussian_color)
-            #         shift_lats, shift_lons, thetas = self.NeuralOptimizer(over_feat_dict, sat_feat_dict, B)
-            #     else:
-            #         thetas = torch.zeros([B, 1, 1], dtype=torch.float32, requires_grad=False, device=sat_map.device)
-            thetas = torch.zeros([B, 1, 1], dtype=torch.float32, requires_grad=False, device=sat_map.device)
-            return None, None, decoder_grd, None, None, None, None, thetas, None
-        
-
-        elif self.args.stage == 3:
+        # TODO: stage 4
+        elif self.args.stage == 4:
             # sat_feat_dict = {}
-            # sat_conf_dict = {}
+            # sat_conf_dict = {}            
             level = self.level[0]
-            # if self.args.share:
-            #     sat_feat_dict_forT, sat_conf_dict_forT = self.FeatureForT(sat_map)
-            #     grd_feat_dict_forT, grd_conf_dict_forT = self.FeatureForT(grd_img_left)
-            # else:
-            #     grd_feat_dict_forT, grd_conf_dict_forT = self.GrdFeatureForT(grd_img_left)
-            #     sat_feat_dict_forT, sat_conf_dict_forT = self.SatFeatureForT(sat_map)
-            self.gaussian_encoder.eval()
             with torch.no_grad():
                 # dino
                 sat_feat = self.dino_feat(sat_map)
@@ -681,6 +533,7 @@ class Model(nn.Module):
             # dpt
             sat_feat, sat_conf = self.dpt(sat_feats)
             grd_feat, grd_conf = self.dpt(grd_feats)
+            
 
             sat_feat_dict_forT = {}
             sat_conf_dict_forT = {}
@@ -694,16 +547,14 @@ class Model(nn.Module):
             # dpt over
 
             self.grd_img_left = self.grd_img_left.unsqueeze(1)
-            
-            grd_gaussian = self.grd_feat_projection(
+            grd_gaussian = self.grd_pure_feat_projection(
                 self.grd_img_left, 
-                grd_feat_dict_forT[level].unsqueeze(1), 
-                grd_conf_dict_forT[level].unsqueeze(1), 
+                grd_feat.unsqueeze(1),
+                grd_conf.unsqueeze(1),
                 grd_depth, 
                 left_camera_k
             )
             
-            render_loss = torch.tensor(0.0).to(self.grd_img_left.device)
             # ----------------- Rotation Stage ---------------------------
             with torch.no_grad():
                 if self.args.rotation_range > 0:
@@ -715,47 +566,36 @@ class Model(nn.Module):
                                                                           left_camera_k, ori_grdH, ori_grdW)
                     heading = thetas[:, -1, -1:].detach()
                 else:
-                    sat_feat_dict_forR, sat_uncer_dict_forR = self.SatFeatureNet(sat_map)
-                    grd_feat_dict_forR, grd_conf_dict_forR = self.SatFeatureNet(grd_img_left)
-                    shift_lats, shift_lons, thetas = self.NeuralOptimizer(grd_feat_dict_forR, sat_feat_dict_forR, B,
-                                                                          left_camera_k, ori_grdH, ori_grdW)
                     heading = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
                     thetas = heading.unsqueeze(1)
+                    shift_lats = None
+                    shift_lons = None
 
             # ----------------- Translation Stage ---------------------------
 
-            grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = render_projections(grd_gaussian, (128,128), heading=heading, rot_range=self.args.rotation_range)
-            test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
-            test_img.save(f'sat_weak_maskfov3.png')
-            # single_features_to_RGB(grd2sat_gaussian_feat2)
+            grd2sat_gaussian_color, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = render_projections(grd_gaussian, (128,128), heading=heading, width=101.0, height=101.0)
+
+            # single_features_to_RGB(grd2sat_gaussian_feat2, img_name = 'sat_weak_maskfov4_feat.png')
             # grd_origin, _, _, _ = self.project_grd_to_map(
-            #         grd_feat, None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH,
+            #         grd_img_left, None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH,
             #         ori_grdW,
             #         require_jac=False)
-            # sat_features_to_RGB_2D_PCA(grd2sat_gaussian_feat2, grd_origin)
+            test_img = to_pil_image(grd2sat_gaussian_color[0].clip(min=0, max=1))
+            test_img.save('sat_weak_no_optimize1.png')
 
-            
-            # test_img = to_pil_image(grd_origin[0].clip(min=0, max=1))
-            # test_img.save(f'grd_origin.png')
-            # grd2sat_gaussian_feat2 = self.forward_project( grd_feat, left_camera_k, grd_depth, self.meters_per_pixel[1], 128, ori_grdH, ori_grdW)
-            # grd2sat_gaussian_conf2 = self.forward_project( grd_conf, left_camera_k, grd_depth, self.meters_per_pixel[1], 128, ori_grdH, ori_grdW)
-
-            # test_img = to_pil_image(self.grd_img_left[0,0].clip(min=0, max=1))
-            # test_img.save(f'grd.png')
-            test_img = to_pil_image(self.sat_map[0].clip(min=0, max=1))
-            test_img.save(f'origin_sat.png')
-
-            # sat_feat = sat_feat_dict_forT[level]
-            # grd2sat_forward = self.forward_project( grd_img_left, left_camera_k, grd_depth, self.meters_per_pixel[1], 128, ori_grdH, ori_grdW)
-            # test_img = to_pil_image(grd2sat_forward[0].clip(min=0, max=1))
-            # test_img.save(f'forward.png')            
+            # test_img = to_pil_image(self.sat_map[0].clip(min=0, max=1))
+            # test_img.save(f'origin_sat.png')
 
             mask_dict = {}
+            sat_feat = sat_feat_dict_forT[level]
+            satmap_sidelength = sat_feat.shape[-1]
+            # XYZ_1 = self.sat2world(satmap_sidelength)                
+            # uv, mask = self.World2GrdImgPixCoordinates(shift_u, shift_v, heading, XYZ_1, left_camera_k, ori_grdH, ori_grdW,
+            #                                                 ori_grdH, ori_grdW)
+                        
             mask = (grd2sat_gaussian_feat2 != 0).any(dim=1, keepdim=True).permute(0, 2, 3, 1)
+            # mask = (grd2sat_gaussian_feat2 != 0).any(dim=1, keepdim=True).permute(0, 2, 3, 1)
             mask_dict[level] = mask
-
-            g2s_feat_dict[level] = grd2sat_gaussian_feat2
-            g2s_conf_dict[level] = grd2sat_gaussian_conf2
 
             for _, level in enumerate(self.level):
 
@@ -766,12 +606,13 @@ class Model(nn.Module):
 
                 crop_H = int(A - 20 * 3 / meter_per_pixel)
                 crop_W = int(A - 20 * 3 / meter_per_pixel)
-                g2s_feat = TF.center_crop(g2s_feat_dict[level], [crop_H, crop_W])
-                g2s_conf = TF.center_crop(g2s_conf_dict[level], [crop_H, crop_W])
+                g2s_feat = TF.center_crop(grd2sat_gaussian_feat2, [crop_H, crop_W])
+                g2s_conf = TF.center_crop(grd2sat_gaussian_conf2, [crop_H, crop_W])
+                # g2s_conf = (g2s_feat != 0).any(dim=1, keepdim=True).float()
                 g2s_feat_dict[level] = g2s_feat
-                # g2s_conf_dict[level] = (g2s_feat != 0).any(dim=1, keepdim=True).float()
                 g2s_conf_dict[level] = g2s_conf
 
+            render_loss = torch.tensor(0.0).to(self.grd_img_left.device)
             return sat_feat_dict_forT, sat_conf_dict_forT, g2s_feat_dict, g2s_conf_dict, mask_dict, shift_lats, shift_lons, thetas, render_loss
 
 def batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, masks=None):

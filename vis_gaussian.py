@@ -12,6 +12,7 @@ from torchvision import transforms
 from gaussian.decoder import DecoderOutput
 from gaussian.diagonal_gaussian_distribution import DiagonalGaussianDistribution
 from gaussian.latent_splat import render_cuda_orthographic
+
 # from gaussian.nopo_cuda_splatting import render_cuda_orthographic
 to_pil_image = transforms.ToPILImage()
 
@@ -37,6 +38,7 @@ class Gaussians:
     color_harmonics: Union[Float[Tensor, "batch gaussian 3 d_sh"], None]
     features: Float[Tensor, "batch gaussian dim"]
     confidence: Float[Tensor, "batch gaussian 1"]
+    rgbs: Union[Float[Tensor, "batch gaussian 3"], None]
 
 def _sanitize_color(color: Color) -> Float[Tensor, "#channel"]:
     # Convert tensor to list (or individual item).
@@ -244,6 +246,8 @@ def render_projections(
     look_axis = 1,
     rot_range = 10.0,
     mode = 'kitti',
+    width = 101.0 / 2,
+    height = 101.0 / 2,
 ) -> Float[Tensor, "batch 3 3 height width"]:
     device = gaussians.means.device
     B, _, _ = gaussians.means.shape
@@ -299,12 +303,6 @@ def render_projections(
         near = torch.zeros_like(far)
         # width = extents[:, right_axis]
         # height = extents[:, down_axis]
-        if mode == 'vigor':
-            width = 90
-            height = 90
-        else:
-            width = 101.0 / 2
-            height = 101.0 / 2
         # extrinsics[:, right_axis, 3] = 0
         # extrinsics[:, down_axis, 3] = 0
 
@@ -322,7 +320,9 @@ def render_projections(
             gaussians.opacities[b:b+1],
             gaussians.features[b:b+1],
             gaussians.confidence[b:b+1],
-            fov_degrees=10.0,
+            gaussians.rgbs[b:b+1] if hasattr(gaussians, 'rgbs') else None,
+            fov_degrees=0.1,
+            use_sh=True,
         )
         color = render_out.color
         feature = render_out.feature

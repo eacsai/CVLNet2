@@ -22,13 +22,16 @@ from models.dino_fit import DINO
 from models.dpt_single import DPT
 
 from loss.lpips import convert_to_buffer
-# from gaussian.encoder_pano import GaussianEncoder
-from gaussian.encoder import GaussianEncoder
-from gaussian.decoder import GrdDecoder
-from vis_gaussian import render_projections
+from gaussian.encoder_pano import GaussianEncoder
+# from gaussian.encoder import GaussianEncoder
+from gaussian.decoder_pano import GrdDecoder
+from vis_gaussian_pano import render_projections
 from jacobian import grid_sample
 from visualize import *
 import cv2
+from pathlib import Path
+from ply_export import export_ply
+# from line_profiler import LineProfiler
 
 to_pil_image = transforms.ToPILImage()
 # original_raw_Lpips_step = 50000
@@ -40,6 +43,47 @@ refine_Lpips_step = 40000
 # original_discriminator_loss_active_step = 125000
 discriminator_loss_active_step = 60000
 
+def equirectangular_to_xyz(width, height, device):
+    """Convert equirectangular coordinates to spherical 3D coordinates in OpenCV convention and rotate 90° around Y-axis using PyTorch."""
+    # 创建 theta 和 phi 为 1D 张量
+    theta = torch.linspace(0, 2 * torch.pi, width, device=device)  # 方位角 [0, 2π]
+    phi = torch.linspace(0, torch.pi, height, device=device)       # 仰角 [0, π]
+    
+    # 生成网格，调整 indexing='ij' 确保符合 PyTorch 约定
+    phi, theta = torch.meshgrid(phi, theta, indexing='ij')
+
+    # 计算 OpenCV 形式的 X, Y, Z 坐标
+    x = torch.sin(phi) * torch.cos(theta)   # OpenCV X: 右
+    y = -torch.cos(phi)                     # OpenCV Y: 下
+    z = -torch.sin(phi) * torch.sin(theta)  # OpenCV Z: 前
+
+    # 将 x, y, z 堆叠在一起，并调整维度 (height, width, 3)
+    xyz = torch.stack((x, y, z), dim=-1)  # (B, V, H, W, 3)
+
+    # 旋转矩阵 (顺时针旋转 90 度)
+    R_y_90 = torch.tensor([
+        [0, 0, 1],  
+        [0, 1, 0],  
+        [-1, 0, 0]
+    ], dtype=torch.float32, device=device)
+
+    # 将点云展平进行矩阵乘法 (B*V*H*W, 3) x (3,3)
+    xyz_rotated = xyz.reshape(-1, 3) @ R_y_90.T  # 应用旋转
+
+    # 还原形状为 (H, W, 3)
+    xyz_rotated = xyz_rotated.view(height, width, 3)
+
+    return xyz_rotated
+
+def onlyDepth(depth, save_name):
+    cmap = cm.Spectral
+    depth = depth[0]
+    depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
+    depth = depth.cpu().detach().numpy()
+    depth = depth.astype(np.uint8)
+    
+    c_depth = (cmap(depth)[:, :, :3] * 255)[:, :, ::-1].astype(np.uint8)
+    cv2.imwrite(save_name, c_depth)
 
 def get_integer(f: Fraction) -> int:
     assert f.denominator == 1, "Fraction is not integer"
@@ -57,17 +101,18 @@ class ModelVIGOR(nn.Module):
         super(ModelVIGOR, self).__init__()
         self.device = device
         self.args = args
+        self.share = args.share
         self.grd_res = args.grd_res
         self.level = sorted([int(item) for item in args.level.split('_')])[0]
         self.N_iters = args.N_iters
         self.channels = ([int(item) for item in self.args.channels.split('_')])
 
-        self.gaussian_encoder = GaussianEncoder(32)
+        self.gaussian_encoder = GaussianEncoder()
         self.grd_decoder = GrdDecoder()
 
         self.dino_feat = DINO()
-        self.dpt = DPT(self.dino_feat.feat_dim)
-        # self.dpt = DPT(self.dino_feat.feat_dim)
+        self.dpt_sat = DPT(self.dino_feat.feat_dim)
+        self.dpt_grd = DPT(self.dino_feat.feat_dim)
         # self.near = torch.ones(args.batch_size, self.face_num).to(device) * 0.5
         # self.far = torch.ones(args.batch_size, self.face_num).to(device) * 160
         self.FeatureForT = VGGUnet(self.level, self.channels)
@@ -76,103 +121,190 @@ class ModelVIGOR(nn.Module):
         self.lpips = LPIPS(net="vgg")
         convert_to_buffer(self.lpips, persistent=False)
         self.global_step = 0
+        self.camera_k = torch.tensor([
+            [0.5000, 0.0000, 0.5000],
+            [0.0000, 0.5000, 0.5000],
+            [0.0000, 0.0000, 1.0000]], device=device).unsqueeze(0)
 
         torch.autograd.set_detect_anomaly(True)
 
-    def forwardGS(self, sat, grd, depth_img):
+
+    def forward_project(self, image_tensor, depth, meter_per_pixel, sat_width=128):
+        B, C, grd_H, grd_W = image_tensor.shape
+        image_tensor = image_tensor.permute(0,2,3,1).contiguous().view(B*grd_H*grd_W, -1)
+        depth = depth.permute(0,2,3,1)
+        # xyz_grd = xyz_w * depth / meter_per_pixel
+        
+        xyz_coords = equirectangular_to_xyz(grd_W, grd_H, image_tensor.device)
+        xyz_grd = xyz_coords.unsqueeze(0) * depth
+        # xyz_grd = xyz_grd.long()
+        # xyz_grd[:,:,:,0:1] += sat_width // 2
+        # xyz_grd[:,:,:,2:3] += sat_width // 2
+        # B, H, W, C = xyz_grd.shape
+        xyz_grd[..., 0] = xyz_grd[..., 0] / meter_per_pixel[:,None,None]
+        xyz_grd[..., 2] = xyz_grd[..., 2] / meter_per_pixel[:,None,None]
+        xyz_grd[..., 0] = xyz_grd[..., 0].long()
+        xyz_grd[..., 2] = xyz_grd[..., 2].long()
+        xyz_grd = xyz_grd.view(B*grd_H*grd_W, -1)
+
+        batch_ix = torch.cat([torch.full([grd_H*grd_W, 1], ix, device=image_tensor.device) for ix in range(B)], dim=0)
+        xyz_grd = torch.cat([xyz_grd, batch_ix], dim=-1)
+
+        kept = (xyz_grd[:,0] >= -(sat_width // 2)) & (xyz_grd[:,0] <= (sat_width // 2) - 1) & (xyz_grd[:,2] >= -(sat_width // 2)) & (xyz_grd[:,2] <= (sat_width // 2) - 1)
+
+        xyz_grd_kept = xyz_grd[kept]
+        image_tensor_kept = image_tensor[kept]
+
+        max_height = xyz_grd_kept[:,1].max()
+
+        xyz_grd_kept[:,0] = xyz_grd_kept[:,0] + sat_width // 2
+        xyz_grd_kept[:,1] = max_height - xyz_grd_kept[:,1]
+        xyz_grd_kept[:,2] = xyz_grd_kept[:,2] + sat_width // 2
+        xyz_grd_kept = xyz_grd_kept[:,[2,0,1,3]]
+        rank = torch.stack((xyz_grd_kept[:, 0] * sat_width * B + (xyz_grd_kept[:, 1] + 1) * B + xyz_grd_kept[:, 3], xyz_grd_kept[:, 2]), dim=1)
+        sorts_second = torch.argsort(rank[:, 1])
+        xyz_grd_kept = xyz_grd_kept[sorts_second]
+        image_tensor_kept = image_tensor_kept[sorts_second]
+        sorted_rank = rank[sorts_second]
+        sorts_first = torch.argsort(sorted_rank[:, 0], stable=True)
+        xyz_grd_kept = xyz_grd_kept[sorts_first]
+        image_tensor_kept = image_tensor_kept[sorts_first]
+        sorted_rank = sorted_rank[sorts_first]
+        kept = torch.ones_like(sorted_rank[:, 0])
+        kept[:-1] = sorted_rank[:, 0][:-1] != sorted_rank[:, 0][1:]
+        res_xyz = xyz_grd_kept[kept.bool()]
+        res_image = image_tensor_kept[kept.bool()]
+        
+        # grd_image_index = torch.cat((-res_xyz[:,1:2] + grd_image_width - 1,-res_xyz[:,0:1] + grd_image_height - 1), dim=-1)
+        final = torch.zeros(B,sat_width,sat_width,C).to(torch.float32).to('cuda')
+        sat_height = torch.zeros(B,sat_width,sat_width,1).to(torch.float32).to('cuda')
+        final[res_xyz[:,3].long(),res_xyz[:,1].long(),res_xyz[:,0].long(),:] = res_image
+
+        res_xyz[:,2][res_xyz[:,2] < 1e-1] = 1e-1
+        sat_height[res_xyz[:,3].long(),res_xyz[:,1].long(),res_xyz[:,0].long(),:] = res_xyz[:,2].unsqueeze(-1)
+        sat_height = sat_height.permute(0,3,1,2)
+        # img_num = 0
+        # project_grd_img = to_pil_image(final[img_num].permute(2, 0, 1))
+        # project_grd_img.save('sat_feat.png')
+
+        # project_grd_img = to_pil_image(origin_image_tensor[img_num])
+        # project_grd_img.save('grd_feat.png')
+
+        return final.permute(0,3,1,2)
+
+    def forwardGS(self, sat, grd, depth_img, gt_rot, meter_per_pixel):
         grd_res = 80
+        b = sat.shape[0]
         # idx = torch.tensor([2, 3, 4, 7, 9, 10, 11, 14, 16, 19], dtype=torch.int64, device=sat.device)
         # idx = torch.tensor([2, 3, 4, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19], dtype=torch.int64, device=sat.device)
-        idx = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], dtype=torch.int64, device=sat.device)
 
         # idx = torch.tensor([0], dtype=torch.int64, device=sat.device)
         # gs_grd = F.interpolate(grd, (160, 320), mode='bilinear', align_corners=True)
         
-        mask = (grd != 0).any(dim=1, keepdim=True).float() 
-        depth_img = depth_img * mask * 80
-
-        pers_imgs, extrinsics, camera_k = split_panorama(grd, gen_res=grd_res, device=self.device)
-        depth_imgs, _, _ = split_panorama(depth_img, gen_res=grd_res, device=self.device)
+        # mask = (grd != 0).any(dim=1, keepdim=True).float() 
+        # depth_img = depth_img * mask * 35
         
-        # depth_imgs = F.interpolate(depth_img, (grd_res, grd_res), mode='bilinear', align_corners=True)
-        # depth_imgs = depth_imgs.unsqueeze(2)
+        # pers_imgs, extrinsics, camera_k = split_panorama(grd, gen_res=grd_res, device=self.device)
+        # depth_imgs, _, _ = split_panorama(depth_img, gen_res=grd_res, device=self.device)
         
-        index = 0
-        showDepth(depth_imgs[0, index], tensor_to_cv2_image(pers_imgs[0, index]))
-        b,v,c,h,w = pers_imgs.shape
-        camera_k = camera_k.unsqueeze(0).repeat(b, v, 1, 1)
-        extrinsics = extrinsics.unsqueeze(0).repeat(b, 1, 1, 1)
-        pers_imgs = pers_imgs[:, idx]
-        camera_k = camera_k[:, idx]
-        extrinsics = extrinsics[:, idx]
-
-        depth_imgs = depth_imgs[:, idx]
+        # # depth_imgs = F.interpolate(depth_img, (grd_res, grd_res), mode='bilinear', align_corners=True)
+        # # depth_imgs = depth_imgs.unsqueeze(2)
         
-        R_transform = torch.tensor([
-            [0, -1,  0],
-            [0,  0, -1],
-            [1,  0,  0]
-        ], dtype=torch.float32, device=sat.device)
+        # # showDepth(depth_imgs[0, index], tensor_to_cv2_image(pers_imgs[0, index]))
+        # b,v,c,h,w = pers_imgs.shape
+        # camera_k = camera_k.unsqueeze(0).repeat(b, v, 1, 1)
+        # extrinsics = extrinsics.unsqueeze(0).repeat(b, 1, 1, 1)
+        # pers_imgs = pers_imgs[:, idx]
+        # camera_k = camera_k[:, idx]
+        # extrinsics = extrinsics[:, idx]
 
-        # 扩展 R_transform 为 4x4 齐次变换矩阵
-        R_transform_homo = torch.eye(4, dtype=torch.float32, device=sat.device)
-        R_transform_homo[:3, :3] = R_transform
-
-        # 将 extrinsics 转换到 OpenCV 坐标系
-        # extrinsics @ R_transform_homo.T 实现变换
-        extrinsics =  R_transform_homo @ extrinsics
-
-        v = len(idx)
-        self.near = torch.ones(b, v).to(self.device) * 0.5
-        self.far = torch.ones(b, v).to(self.device) * 160
+        # depth_imgs = depth_imgs[:, idx]
         
-        gs_grd = F.interpolate(grd, (grd_res, grd_res*2), mode='bilinear', align_corners=True).unsqueeze(1)
-        gs_pers_imgs = F.interpolate(pers_imgs.view(b*v, c, h, w), (grd_res, grd_res), mode='bilinear', align_corners=True).view(b, v, c, grd_res, grd_res)
-        depth_img = F.interpolate(depth_img, (grd_res, grd_res*2), mode='bilinear', align_corners=True)
+        # R_transform = torch.tensor([
+        #     [0, -1,  0],
+        #     [0,  0, -1],
+        #     [1,  0,  0]
+        # ], dtype=torch.float32, device=sat.device)
+
+        # # 扩展 R_transform 为 4x4 齐次变换矩阵
+        # R_transform_homo = torch.eye(4, dtype=torch.float32, device=sat.device)
+        # R_transform_homo[:3, :3] = R_transform
+
+        # # 将 extrinsics 转换到 OpenCV 坐标系
+        # # extrinsics @ R_transform_homo.T 实现变换
+        # extrinsics =  R_transform_homo @ extrinsics
+
+        self.near = torch.ones(b).to(self.device) * 0.2
+        self.far = torch.ones(b).to(self.device) * 160
+        
+        gs_grd = F.interpolate(grd, (grd_res, grd_res*2), mode='bilinear', align_corners=True)
+        # gs_pers_imgs = F.interpolate(pers_imgs.view(b*v, c, h, w), (grd_res, grd_res), mode='bilinear', align_corners=True).view(b, v, c, grd_res, grd_res)
+        gs_depth_img = F.interpolate(depth_img, (grd_res, grd_res*2), mode='bilinear', align_corners=True) * 50
         grd_gaussian = self.gaussian_encoder(
             gs_grd, 
             None, 
             None, 
-            camera_k[:, :1, :, :], 
-            torch.eye(4,4).unsqueeze(0).unsqueeze(0).to(self.device),
-            self.near[:, :1],
-            self.far[:, :1],
-            depth_img,
-            False,
+            gs_depth_img,
         )
         
         decoder_grd = self.grd_decoder(
             grd_gaussian,     # Sample from variational Gaussians
-            extrinsics,
-            camera_k,
+            torch.eye(4,4).unsqueeze(0).repeat(b,1,1).to(self.device),
+            self.camera_k.repeat(b, 1, 1),
             self.near,
             self.far,
-            (grd_res,grd_res)
+            (grd_res,grd_res*2)
         )
         grd_color = decoder_grd.color
-        test_img = to_pil_image(grd_color[0,2].clip(min=0, max=1))
-        test_img.save(f'grd_vigor_20face_{grd_res}.png')
-        test_img = to_pil_image(pers_imgs[0,2].clip(min=0, max=1))
-        test_img.save(f'real_vigor_20face_{grd_res}.png')
+        test_img = to_pil_image(grd_color[0].clip(min=0, max=1))
+        test_img.save(f'gaussian_grd.png')
+        test_img = to_pil_image(gs_grd[0].clip(min=0, max=1))
+        test_img.save(f'real_grd.png')
 
+        # onlyDepth(decoder_grd.depth.squeeze(), 'pano_depth.png')
+        # onlyDepth(gs_depth_img.squeeze(), 'gt_depth.png')
         heading = torch.ones([sat.shape[0], 1], device=sat.device) * 90
         rot_range = 1
-        grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = render_projections(grd_gaussian, (128,128), heading=heading, rot_range=rot_range)
+
+        # gaussian mapping
+        grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2, grd2sat_gaussian_depth = render_projections(grd_gaussian, (128,128), heading=heading, rot_range=rot_range, mode='vigor')
         test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
-        test_img.save(f'sat_vigor_20face_{grd_res}.png')
-        
+        test_img.save(f'bev_gaussian.png')
+        test_sat = F.interpolate(sat, (128, 128), mode='bilinear', align_corners=True)
+        test_img = to_pil_image(test_sat[0].clip(min=0, max=1))
+        test_img.save(f'sat.png')
+
+        shift_u = torch.zeros([sat.shape[0]], dtype=torch.float32, requires_grad=True, device=sat.device)
+        shift_v = torch.zeros([sat.shape[0]], dtype=torch.float32, requires_grad=True, device=sat.device)
+        grd_feat_proj, grd_conf_proj, grd_uv = self.project_grd_to_map(
+            gs_grd, None, gt_rot, shift_u, shift_v, self.level, meter_per_pixel)
+        # grd_color = decoder_grd.color
+        # test_img = to_pil_image(grd_color[idx].clip(min=0, max=1))
+        # test_img.save(f'grd_vigor.png')
+        # test_img = to_pil_image(grd[idx].clip(min=0, max=1))
+        # test_img.save(f'ori_grd_vigor.png')
+        test_img = to_pil_image(grd_feat_proj[0].clip(min=0, max=1))
+        test_img.save(f'ori_vigor.png')
+        # forward mapping
+        # forward_map = self.forward_project(grd, depth_img, torch.tensor([30 / 128]).to('cuda'), 128)
+        # test_img = to_pil_image(forward_map[0])
+        # test_img.save(f'bev_forward.png')
+        # export_ply(grd_gaussian.means[0], grd_gaussian.scales[0], grd_gaussian.rotations[0], grd_gaussian.color_harmonics[0], grd_gaussian.opacities[0], Path('grd_gaussian.ply'))
+
+        # mask = (forward_map != 0).any(dim=1, keepdim=True).float() 
+        # grd2sat_gaussian_color2 = grd2sat_gaussian_color2 * mask
         # xyz_coords = equirectangular_to_xyz(320, 160, start_height=start_height)
         # points = torch.tensor(xyz_coords, dtype=torch.float32, requires_grad=False, device=sat.device).unsqueeze(0).repeat(sat.shape[0], 1, 1, 1)
         # points = points * decoder_grd.depth.unsqueeze(-1)
-        gs_depth_imgs = depth_imgs.squeeze(2)
-        rgb_mse_loss = F.mse_loss(decoder_grd.color, gs_pers_imgs, reduction='mean')
-        depth_l1_loss = F.l1_loss(decoder_grd.depth, gs_depth_imgs, reduction='mean')
+        # bev_mse_loss = F.mse_loss(grd2sat_gaussian_color2, forward_map, reduction='mean')
+        rgb_mse_loss = F.mse_loss(decoder_grd.color, gs_grd, reduction='mean')
+        depth_l1_loss = F.l1_loss(decoder_grd.depth, gs_depth_img.squeeze(1), reduction='mean')
         if self.global_step >= raw_Lpips_step:
-            raw_lpips_loss = self.lpips.forward(decoder_grd.color.view(b*v, c, grd_res, grd_res), gs_pers_imgs.view(b*v, c, grd_res, grd_res),  normalize=True)
+            raw_lpips_loss = self.lpips.forward(decoder_grd.color, gs_grd,  normalize=True)
         else:
             raw_lpips_loss = torch.tensor(0, dtype=torch.float32, device=decoder_grd.color.device)
         
-        self.render_loss = rgb_mse_loss * 20 + depth_l1_loss + raw_lpips_loss.mean()
+        self.render_loss = depth_l1_loss + (rgb_mse_loss) * 40 + raw_lpips_loss.mean() * 2
         self.global_step = self.global_step + sat.shape[0]
         return self.render_loss
 
@@ -236,47 +368,24 @@ class ModelVIGOR(nn.Module):
         return grd_f_trans, grd_c_trans, uv
 
     # @profile
-    def forward2DoF(self, sat, grd, gt_rot, meter_per_pixel):
+    def forward2DoF(self, sat, grd, depth_imgs, gt_rot, meter_per_pixel):
+        b = sat.shape[0]
+        grd_res = 80
         self.gaussian_encoder.eval()
-        idx = torch.tensor([2, 3, 4, 7, 9, 10, 11, 14, 16, 19], dtype=torch.int64, device=sat.device)
-        # idx = torch.tensor([0], dtype=torch.int64, device=sat.device)
-        # gs_grd = F.interpolate(grd, (160, 320), mode='bilinear', align_corners=True)
-        pers_imgs, extrinsics, camera_k = split_panorama(grd, gen_res=160, device=self.device)
-        b,v,c,h,w = pers_imgs.shape
-        camera_k = camera_k.unsqueeze(0).repeat(b, v, 1, 1)
-        extrinsics = extrinsics.unsqueeze(0).repeat(b, 1, 1, 1)
-        pers_imgs = pers_imgs[:, idx]
-        camera_k = camera_k[:, idx]
-        extrinsics = extrinsics[:, idx]
 
-        R_transform = torch.tensor([
-            [0, -1,  0],
-            [0,  0, -1],
-            [1,  0,  0]
-        ], dtype=torch.float32, device=sat.device)
-
-        # 扩展 R_transform 为 4x4 齐次变换矩阵
-        R_transform_homo = torch.eye(4, dtype=torch.float32, device=sat.device)
-        R_transform_homo[:3, :3] = R_transform
-
-        # 将 extrinsics 转换到 OpenCV 坐标系
-        # extrinsics @ R_transform_homo.T 实现变换
-        extrinsics =  R_transform_homo @ extrinsics
-
-        v = len(idx)
-        self.near = torch.ones(b, v).to(self.device) * 0.5
-        self.far = torch.ones(b, v).to(self.device) * 160
+        self.near = torch.ones(b).to(self.device) * 0.2
+        self.far = torch.ones(b).to(self.device) * 160
         self.sat = F.interpolate(sat, (128, 128), mode='bilinear', align_corners=True)
-        
-        gs_pers_imgs = F.interpolate(pers_imgs.view(b*v, c, h, w), (self.grd_res, self.grd_res), mode='bilinear', align_corners=True).view(b, v, c, self.grd_res, self.grd_res)
-        
+        # mask = (grd != 0).any(dim=1, keepdim=True).float() 
+        # depth_imgs = depth_imgs * mask * 35
         # sat_feat_dict, sat_conf_dict = self.SatFeatureNet(sat)
-        # grd_feat_dict, grd_conf_dict = self.GrdFeatureNet(pers_imgs.view(b*v, c, h, w))
+        # grd_feat_dict, grd_conf_dict = self.GrdFeatureNet(grd)
 
+        # dptstart
         with torch.no_grad():
             # dino
             sat_feat = self.dino_feat(sat)
-            grd_feat = self.dino_feat(pers_imgs.view(b*v, c, h, w))
+            grd_feat = self.dino_feat(grd)
             if isinstance(sat_feat, (tuple, list)):
                 sat_feats = [_f.detach() for _f in sat_feat]
             if isinstance(grd_feat, (tuple, list)):
@@ -284,9 +393,12 @@ class ModelVIGOR(nn.Module):
         
         # TODO: use two dpt and upsample grd_feat
         # dpt
-        sat_feat, sat_conf = self.dpt(sat_feats)
-        grd_feat, grd_conf = self.dpt(grd_feats)
-
+        if self.share:
+            sat_feat, sat_conf = self.dpt_sat(sat_feats)
+            grd_feat, grd_conf = self.dpt_sat(grd_feats)
+        else:
+            sat_feat, sat_conf = self.dpt_sat(sat_feats)
+            grd_feat, grd_conf = self.dpt_grd(grd_feats)
         sat_feat_dict = {}
         sat_conf_dict = {}
         grd_feat_dict = {}
@@ -302,64 +414,29 @@ class ModelVIGOR(nn.Module):
         # grd_feat_dict, grd_conf_dict = self.FeatureForT(pers_imgs.view(b*v, c, h, w))
         
 
-
-        if self.grd_res == 80:
-            grd_feat = F.interpolate(grd_feat_dict[self.level], scale_factor=2)
-            pers_feat = grd_feat.view(b, v, -1, self.grd_res, self.grd_res)
-            grd_conf = F.interpolate(grd_conf_dict[self.level], scale_factor=2)
-            pers_conf = grd_conf.view(b, v, -1, self.grd_res, self.grd_res)
-            # pers_feat = grd_feat_dict[self.level].view(b, v, -1, self.grd_res, self.grd_res)
-            # pers_conf = grd_conf_dict[self.level].view(b, v, -1, self.grd_res, self.grd_res)
-        elif self.grd_res == 160:
-            grd_feat = F.interpolate(grd_feat_dict[self.level], scale_factor=4)
-            pers_feat = grd_feat.view(b, v, -1, self.grd_res, self.grd_res)
-            grd_conf = F.interpolate(grd_conf_dict[self.level], scale_factor=4)
-            pers_conf = grd_conf.view(b, v, -1, self.grd_res, self.grd_res)
-        else:
-            pers_feat = grd_feat_dict[self.level].view(b, v, -1, self.grd_res, self.grd_res)
-            pers_conf = grd_conf_dict[self.level].view(b, v, -1, self.grd_res, self.grd_res)
-        # pers_feat, _, _ = split_panorama(grd_feat, gen_res=self.grd_res, device=self.device)
-        # pers_feat = pers_feat[:, idx]
-
         g2s_feat_dict = {}
         g2s_conf_dict = {}
-        shift_u = torch.zeros([sat.shape[0]], dtype=torch.float32, requires_grad=True, device=sat.device)
-        shift_v = torch.zeros([sat.shape[0]], dtype=torch.float32, requires_grad=True, device=sat.device)
-
+        
+        gs_grd = F.interpolate(grd, (grd_res, grd_res*2), mode='bilinear', align_corners=True)
+        gs_depth_img = F.interpolate(depth_imgs, (grd_res, grd_res*2), mode='bilinear', align_corners=True)  # 50
+        
         grd_gaussian = self.gaussian_encoder(
-            gs_pers_imgs, 
-            pers_feat, 
-            pers_conf, 
-            camera_k, 
-            extrinsics,
-            self.near,
-            self.far,
-            False,
+            gs_grd, 
+            grd_feat_dict[self.level], 
+            grd_conf_dict[self.level], 
+            gs_depth_img,
         )
         
         # decoder_grd = self.grd_decoder(
         #     grd_gaussian,     # Sample from variational Gaussians
-        #     extrinsics,
-        #     camera_k,
+        #     torch.eye(4,4).unsqueeze(0).repeat(b,1,1).to(self.device),
+        #     self.camera_k.repeat(b, 1, 1),
         #     self.near,
         #     self.far,
-        #     (self.grd_res,self.grd_res)
-        #     # (160 - start_height, 320),
+        #     (grd_res,grd_res*2)
         # )
         
-        # idx = 0
-        # grd_feat_proj, grd_conf_proj, grd_uv = self.project_grd_to_map(
-        #     grd, None, gt_rot, shift_u, shift_v, self.level, meter_per_pixel)
-        # grd_color = decoder_grd.color
-        # test_img = to_pil_image(grd_color[idx,2].clip(min=0, max=1))
-        # test_img.save(f'grd_vigor_s3_20face_{self.grd_res}.png')
-        # test_img = to_pil_image(grd[idx].clip(min=0, max=1))
-        # test_img.save(f'ori_grd_vigor_s3_20face_{self.grd_res}.png')
-        # test_img = to_pil_image(pers_imgs[idx,2].clip(min=0, max=1))
-        # test_img.save(f'real_vigor_s3_20face_{self.grd_res}.png')
-        # test_img = to_pil_image(grd_feat_proj[idx].clip(min=0, max=1))
-        # test_img.save(f'ori_vigor_s3_20face_{self.grd_res}.png')
-
+        
         if self.args.rotation_range == 0:
             heading = torch.ones_like(gt_rot.unsqueeze(-1), device=gt_rot.device) * 90
             rot_range = 1
@@ -367,15 +444,26 @@ class ModelVIGOR(nn.Module):
             heading = torch.ones_like(gt_rot.unsqueeze(-1), device=gt_rot.device) * 90 / self.args.rotation_range
             heading = heading + gt_rot.unsqueeze(-1)
             rot_range = self.args.rotation_range
-        grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = render_projections(grd_gaussian, (128,128), heading=heading, rot_range=rot_range, mode='vigor')
+        grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2, grd2sat_gaussian_depth = render_projections(grd_gaussian, (128,128), heading=heading, rot_range=rot_range, width=101.0, height=101.0)
         grd2sat_feat2 = grd2sat_gaussian_feat2
         grd2sat_conf2 = grd2sat_gaussian_conf2
 
         # vis
-        # test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
-        # test_img.save(f'g2s_vigor_s3_20face_dpt_{self.grd_res}.png')
-        # test_img = to_pil_image(self.sat[0].clip(min=0, max=1))
-        # test_img.save(f'sat_vigor_s3_20face_{self.grd_res}.png')
+        # idx = 0
+        # grd_feat_proj, grd_conf_proj, grd_uv = self.project_grd_to_map(
+        #     gs_grd, None, gt_rot, shift_u, shift_v, self.level, meter_per_pixel)
+        # grd_color = decoder_grd.color
+        # test_img = to_pil_image(grd_color[idx].clip(min=0, max=1))
+        # test_img.save(f'grd_vigor.png')
+        # test_img = to_pil_image(grd[idx].clip(min=0, max=1))
+        # test_img.save(f'ori_grd_vigor.png')
+        # test_img = to_pil_image(grd_feat_proj[0].clip(min=0, max=1))
+        # test_img.save(f'ori_vigor.png')
+
+        test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
+        test_img.save(f'g2s_vigor.png')
+        test_img = to_pil_image(self.sat[0].clip(min=0, max=1))
+        test_img.save(f'sat_vigor.png')
         # vis
         # single_features_to_RGB(grd2sat_feat2, idx)
         # sat_features_to_RGB(sat_feat_dict[self.level], grd2sat_feat2, idx)
@@ -401,10 +489,10 @@ class ModelVIGOR(nn.Module):
     
     def forward(self, sat, grd, depth_imgs, meter_per_pixel, gt_rot=None, gt_shift_u=None, gt_shift_v=None, stage=None, loop=None, save_dir=None):
         if self.args.Supervision == 'Gaussian':
-            loss = self.forwardGS(sat, grd, depth_imgs)
+            loss = self.forwardGS(sat, grd, depth_imgs, gt_rot, meter_per_pixel)
             return loss
         else:
-            return self.forward2DoF(sat, grd, gt_rot, meter_per_pixel)
+            return self.forward2DoF(sat, grd, depth_imgs, gt_rot, meter_per_pixel)
         
 
 def batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, masks=None):
@@ -540,7 +628,10 @@ def Weakly_supervised_loss_w_GPS_error(corr_maps, gt_shift_u, gt_shift_v, args, 
         dis = torch.min(corr.reshape(M, N, -1), dim=-1)[0]
         pos = torch.diagonal(dis) # [M]  # it is also the predicted distance
         pos_neg = pos.reshape(-1, 1) - dis
-        loss = torch.sum(torch.log(1 + torch.exp(pos_neg * 10))) / (M * (N-1))
+        if (M == 1):
+            loss = torch.sum(torch.log(1 + torch.exp(pos_neg * 10)))
+        else:
+            loss = torch.sum(torch.log(1 + torch.exp(pos_neg * 10))) / (M * (N-1))
         matching_losses.append(loss)
 
         # ---------- preparing for GPS error Loss -------
