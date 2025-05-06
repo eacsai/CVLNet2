@@ -1,0 +1,10 @@
+====================================
+       EPOCH: 0
+args.stage: 3stage: 3
+Time per image (second): 0.24019469473127264
+Distance average: (init, pred)13.956313 4.4114165
+Distance median: (init, pred)14.525444 2.1769066
+distance within 1 meters (init, pred): 0.3231324843185706 12.031933092567954
+distance within 3 meters (init, pred): 2.2524234936323895 66.88842425394411
+distance within 5 meters (init, pred): 6.111005512260027 80.40296521573845
+====================================

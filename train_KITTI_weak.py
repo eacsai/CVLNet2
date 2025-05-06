@@ -33,34 +33,83 @@ from matplotlib import colors
 
 
 def show_cam_on_image(img: np.ndarray,
-                      mask: np.ndarray,
-                      use_rgb: bool = True,
-                      colormap: int = cv2.COLORMAP_RAINBOW) -> np.ndarray:
-    """ This function overlays the cam mask on the image as an heatmap.
-    By default the heatmap is in BGR format.
+                         mask: np.ndarray,
+                         use_rgb: bool = True, # Still useful if img input format varies
+                         colormap: str = 'viridis') -> np.ndarray:
+    """ This function overlays the cam mask on the image as a heatmap using Matplotlib colormaps.
 
-    :param img: The base image in RGB or BGR format.
-    :param mask: The cam mask.
-    :param use_rgb: Whether to use an RGB or BGR heatmap, this should be set to True if 'img' is in RGB format.
-    :param colormap: The OpenCV colormap to be used.
-    :returns: The default image with the cam overlay.
+    :param img: The base image in RGB or BGR format, expected as np.float32 in the range [0, 1].
+    :param mask: The 2D cam mask (grayscale heatmap data).
+    :param use_rgb: Whether the input image `img` is in RGB format (affects potential blending interpretation, though addition is channel-wise).
+    :param colormap: The name of the Matplotlib colormap to be used (e.g., 'viridis', 'jet', 'coolwarm_r', etc.)
+                     or a Colormap object itself.
+    :returns: The blended image with the cam overlay as np.uint8 in the same format (RGB/BGR) as input img.
     """
-    mask = np.uint8(255 - 255 * (mask/mask.max()))
-    H, W = mask.shape
-    heatmap = cv2.applyColorMap(mask, colormap)
-    # heatmap = cv2.applyColorMap(np.uint8(255 * mask), colormap)
-    if use_rgb:
-        heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-    # heatmap = np.float32(heatmap) / 255
-    heatmap = np.float32(heatmap)/(255*2)
+    # --- Input Validation ---
+    if np.max(img) > 1.001 or np.min(img) < -0.001: # Allow for small float inaccuracies
+         # Try to normalize if it looks like 0-255 range
+         if np.max(img) > 2.0 and np.min(img) >=0:
+             print("Warning: Input image seems to be in [0, 255] range. Normalizing to [0, 1].")
+             img = img.astype(np.float32) / 255.0
+         else:
+            raise ValueError("Input image `img` should be np.float32 in the range [0, 1]")
+    if mask.ndim != 2:
+        raise ValueError(f"Input mask must be 2D, but got shape {mask.shape}")
 
-    if np.max(img) > 1:
-        raise Exception("The input image should np.float32 in the range [0, 1]")
+    # --- Mask Normalization [0, 1] ---
+    mask_min = np.min(mask)
+    mask_max = np.max(mask)
+    if mask_max == mask_min:
+        # Handle constant mask: make it fully transparent or a mid-value gray?
+        # Option 1: Make it fully transparent equivalent (0)
+        # normalized_mask = np.zeros_like(mask, dtype=np.float32)
+        # Option 2: Map to a mid-value (0.5) - better visual if value isn't zero
+        normalized_mask = np.full_like(mask, 0.5, dtype=np.float32)
+        print("Warning: Input mask is constant.")
+    else:
+        normalized_mask = (mask - mask_min) / (mask_max - mask_min)
 
-    # cam = 0.3*heatmap + 0.7*img
-    cam = heatmap + img
-    cam = cam / np.max(cam)
-    return np.uint8(255 * cam)
+    # --- Apply Matplotlib Colormap ---
+    try:
+        cmap = plt.get_cmap(colormap)
+        # Apply colormap: cmap returns RGBA values in range [0, 1]
+        heatmap_rgba = cmap(normalized_mask)
+        # Keep only RGB channels
+        heatmap_rgb = heatmap_rgba[:, :, :3] # Shape: [H, W, 3], range [0, 1], float32
+    except ValueError:
+        print(f"Warning: Colormap '{colormap}' not found. Using 'viridis'.")
+        cmap = plt.get_cmap('viridis')
+        heatmap_rgba = cmap(normalized_mask)
+        heatmap_rgb = heatmap_rgba[:, :, :3]
+
+    # --- Blending ---
+    # Ensure heatmap_rgb and img are float32 [0, 1]
+    heatmap_float = heatmap_rgb.astype(np.float32)
+    img_float = img.astype(np.float32)
+
+    # Choose blending method:
+    # Option A: Simple addition (like original if scale was 0.5)
+    # cam = heatmap_float + img_float
+    # Option B: Weighted averaging (often preferred)
+    alpha = 0.5 # Adjust transparency of heatmap
+    cam = alpha * heatmap_float + (1 - alpha) * img_float
+
+    # --- Final Normalization and Conversion ---
+    # Normalize the blended image to be in [0, 1] by clipping or dividing by max
+    # Clipping is often safer to preserve relative brightness
+    cam = np.clip(cam, 0, 1)
+    # cam = cam / np.max(cam) # Alternative: scales relative brightness
+
+    # Convert to uint8 in the range [0, 255]
+    cam_uint8 = np.uint8(255 * cam)
+
+    # --- Ensure output format matches input 'use_rgb' flag ---
+    # (Matplotlib output is RGB, so convert *back* to BGR if use_rgb is False)
+    # This step is only needed if the calling code strictly expects BGR based on use_rgb=False
+    # if not use_rgb:
+    #     cam_uint8 = cv2.cvtColor(cam_uint8, cv2.COLOR_RGB2BGR)
+
+    return cam_uint8
 
 def test1_orien(net_test, args, save_path, epoch):
     

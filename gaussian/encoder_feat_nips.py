@@ -14,6 +14,59 @@ from depth_predictor.depth_predictor_monocular import DepthPredictorMonocular
 from gaussian.diagonal_gaussian_distribution import DiagonalGaussianDistribution
 from gaussian.build_gaussians import sample_image_grid
 from gaussian.gaussian_adapter_feat import GaussianAdapter
+from ply_export import export_ply
+from pathlib import Path
+
+# --- Constants ---
+SH_C0 = 0.28209479177387814 # 1 / (2 * sqrt(pi))
+
+def rgb_to_sh(rgb: torch.Tensor, max_degree: int = 0) -> torch.Tensor:
+    """
+    Converts RGB color values to Spherical Harmonics coefficients.
+
+    Assumes RGB values are in the [0, 1] range.
+    The resulting SH coefficients will represent the color as the DC term (L=0),
+    with higher order coefficients set to zero.
+
+    Args:
+        rgb (torch.Tensor): Input RGB tensor, shape [B, N, 3].
+        max_degree (int): The maximum SH degree to include coefficients for.
+                          Degree 0 means only DC term (3 coeffs per RGB).
+                          Degree 1 adds L=1 terms (total 1+3=4 coeffs per channel -> 12 total).
+                          Degree 2 adds L=2 terms (total 1+3+5=9 coeffs per channel -> 27 total).
+                          Defaults to 0.
+
+    Returns:
+        torch.Tensor: Spherical Harmonics coefficients, shape [B, N, 3, (max_degree + 1)**2].
+                     The format matches [Batch, NumPoints, Channels, SHCoeffs].
+    """
+    # --- Input Validation ---
+    assert rgb.dim() == 3 and rgb.shape[2] == 3, f"Input RGB tensor must have shape [B, N, 3], got {rgb.shape}"
+    assert max_degree >= 0, "max_degree must be non-negative"
+    B, N, _ = rgb.shape
+    device = rgb.device
+
+    # Clamp RGB values to [0, 1] just in case
+    rgb_clamped = torch.clamp(rgb, 0.0, 1.0)
+
+    # Shift color values from [0, 1] to [-0.5, 0.5]
+    rgb_shifted = rgb_clamped - 0.5
+
+    # Calculate the DC component (L=0) for each color channel
+    sh_dc = rgb_shifted / SH_C0 # Shape: [B, N, 3]
+
+    # Calculate the total number of SH coefficients up to max_degree
+    num_sh_coeffs = (max_degree + 1) ** 2
+
+    # Create the full SH tensor, initialized to zeros
+    # Target shape: [B, N, 3, num_sh_coeffs]
+    sh = torch.zeros((B, N, 3, num_sh_coeffs), dtype=rgb.dtype, device=device)
+
+    # Place the calculated DC component into the first coefficient slot (index 0)
+    # sh[:, :, :, 0] has shape [B, N, 3] which matches sh_dc
+    sh[..., 0] = sh_dc # Ellipsis (...) selects all preceding dimensions
+
+    return sh
 
 @dataclass
 class Gaussians:
@@ -58,8 +111,8 @@ class GaussianFeatEncoder(nn.Module):
             nn.ReLU(),
         )
 
-        self.offset_max = [0.3] * 3
-        self.scale_max = [0.3] * 3
+        self.offset_max = [0.5] * 3
+        self.scale_max = [0.5] * 3
 
     def map_pdf_to_opacity(
         self,
@@ -127,7 +180,15 @@ class GaussianFeatEncoder(nn.Module):
 
         gs_features = gs_features.broadcast_to((*opacities.shape, 32))
         gs_confidences = gs_confidences.broadcast_to((*opacities.shape, 1))
+        # gs_confidences = opacities.unsqueeze(-1)
         gs_rgbs = gs_rgbs.broadcast_to((*opacities.shape, 3))
+        # sh = rgb_to_sh(
+        #     rearrange(
+        #         gs_rgbs,
+        #         "b v r spp c -> b (v r spp) c",
+        #     ), 
+        #     max_degree=0
+        # )
         # Dump visualizations if needed.
         # if visualization_dump is not None:
         #     visualization_dump["depth"] = rearrange(
@@ -145,6 +206,26 @@ class GaussianFeatEncoder(nn.Module):
         #     rearrange(self.to_opacity(features), "b v r () -> b v r () ()")
         #     if self.cfg.predict_opacity
         #     else 1
+        # )
+        # export_ply(
+        #     means = rearrange(
+        #         means,
+        #         "b v r spp xyz -> b (v r spp) xyz",
+        #     )[0],
+        #     scales = rearrange(
+        #         scales,
+        #         "b v r spp xyz -> b (v r spp) xyz",
+        #     )[0],
+        #     rotations = rearrange(
+        #         rotations,
+        #         "b v r spp xyzt -> b (v r spp) xyzt",
+        #     )[0],
+        #     harmonics = sh[0],
+        #     opacities = rearrange(
+        #         opacities,
+        #         "b v r spp -> b (v r spp)",
+        #     )[0],
+        #     path=Path('grd_gaussian.ply')
         # )
 
         return Gaussians(

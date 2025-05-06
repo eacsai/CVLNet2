@@ -1,0 +1,40 @@
+====================================
+       EPOCH: 0
+args.stage: 3stage: 3
+Time per image (second): 0.5290440751182313
+Distance average: (init, pred)13.956313 5.8346715
+Distance median: (init, pred)14.525444 3.1775482
+distance within 1 meters (init, pred): 0.3231324843185706 5.07508078312108
+distance within 3 meters (init, pred): 2.2524234936323895 46.37901539631249
+distance within 5 meters (init, pred): 6.111005512260027 69.73959323322563
+====================================
+====================================
+       EPOCH: 1
+args.stage: 3stage: 3
+Time per image (second): 0.507583402173685
+Distance average: (init, pred)13.956313 5.005571
+Distance median: (init, pred)14.525444 2.8637812
+distance within 1 meters (init, pred): 0.3231324843185706 6.0729899258696065
+distance within 3 meters (init, pred): 2.2524234936323895 52.96521573845276
+distance within 5 meters (init, pred): 6.111005512260027 76.26877019578026
+====================================
+====================================
+       EPOCH: 2
+args.stage: 3stage: 3
+Time per image (second): 0.4920157821674122
+Distance average: (init, pred)13.956313 4.8311877
+Distance median: (init, pred)14.525444 2.657072
+distance within 1 meters (init, pred): 0.3231324843185706 6.937844516251664
+distance within 3 meters (init, pred): 2.2524234936323895 56.96635620604448
+distance within 5 meters (init, pred): 6.111005512260027 77.57080402965217
+====================================
+====================================
+       EPOCH: 3
+args.stage: 3stage: 3
+Time per image (second): 0.4521858652296831
+Distance average: (init, pred)13.956313 4.642851
+Distance median: (init, pred)14.525444 2.6241088
+distance within 1 meters (init, pred): 0.3231324843185706 6.367610720395363
+distance within 3 meters (init, pred): 2.2524234936323895 59.095229043908006
+distance within 5 meters (init, pred): 6.111005512260027 79.85173921307737
+====================================

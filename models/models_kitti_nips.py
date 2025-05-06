@@ -117,7 +117,7 @@ class Model(nn.Module):
         # Running the forward pass with detection enabled will allow the backward pass to print the traceback of the forward operation that created the failing backward function.
         # Any backward computation that generate “nan” value will raise an error.
     
-    def grd_pure_feat_projection(self, grd_img_left, grd_feat, grd_depth, left_camera_k):
+    def grd_pure_feat_projection(self, grd_img_left, grd_feat, grd_conf, grd_depth, left_camera_k):
         # initial
         self.camera_k = left_camera_k.clone()
         self.camera_k[:, :1, :] = self.camera_k[:, :1, :] / grd_depth.shape[2]  # original size input into feature get network/ output of feature get network
@@ -129,6 +129,7 @@ class Model(nn.Module):
             self.grd_img_left,
             grd_depth,
             grd_feat,
+            grd_conf,
             self.camera_k, 
             self.extrinsics, 
         )
@@ -574,6 +575,16 @@ class Model(nn.Module):
             # ----------------- Translation Stage ---------------------------
 
             grd2sat_gaussian_color, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = render_projections(grd_gaussian, (128,128), heading=heading, width=101.0, height=101.0)
+
+            # decoder_grd = self.grd_decoder.forward(
+            #     grd_gaussian,     # Sample from variational Gaussians
+            #     self.extrinsics,
+            #     self.camera_k,
+            #     self.near,
+            #     self.far,
+            #     (64, 256),
+            # )
+
 
             # single_features_to_RGB(grd2sat_gaussian_feat2, img_name = 'sat_weak_maskfov4_feat.png')
             # grd_origin, _, _, _ = self.project_grd_to_map(

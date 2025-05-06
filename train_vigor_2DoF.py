@@ -1,6 +1,6 @@
 import os
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
 import torch
 import torch.nn as nn
@@ -17,6 +17,8 @@ from torch.optim.lr_scheduler import OneCycleLR
 
 from models.models_vigor import ModelVIGOR, batch_wise_cross_corr, corr_for_translation, Weakly_supervised_loss_w_GPS_error, \
     corr_for_accurate_translation_supervision, GT_triplet_loss
+import matplotlib.cm as cm # 导入 colormap 模块
+import matplotlib.colors as mcolors # 导入 colors 模块
 
 import numpy as np
 import argparse
@@ -146,6 +148,131 @@ def val(dataloader, net, args, save_path, epoch, best=0.0, stage=None):
 
             pred_u, pred_v, corr = corr_for_translation(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict,
                                                         args, sat_uncer_dict)
+
+            if args.visualize and i == 4:
+
+                visualize_dir = os.path.join(save_path, 'visualization')
+                if not os.path.exists(visualize_dir):
+                    os.makedirs(visualize_dir)
+
+                level = max([int(item) for item in args.level.split('_')])
+                corr = corr[0]
+                corr_H, corr_W = corr.shape
+
+                gt_u1 = gt_shift_u.data.cpu().numpy() * 512/4
+                gt_v1 = gt_shift_v.data.cpu().numpy() * 512/4
+
+                visualize_dir = os.path.join(save_path, 'visualization', f"{i}_{0}")
+                if not os.path.exists(visualize_dir):
+                    os.makedirs(visualize_dir)
+                
+                max_index = torch.argmax(corr.reshape(-1)).data.cpu().numpy()
+
+                pred_u = (max_index % corr_W - corr_W / 2) * np.power(2, 3 - level)
+                pred_v = (max_index // corr_W - corr_H / 2) * np.power(2, 3 - level)
+
+                prob_map = cv2.resize(corr.data.cpu().numpy(),
+                                    (corr.shape[1] * 4, corr.shape[0] * 4))  # [25:285, 25:285]
+                img = sat[0].permute(1, 2, 0).data.cpu().numpy()[
+                    (512 - prob_map.shape[0]) // 2: (-512 + prob_map.shape[0]) // 2,
+                    (512 - prob_map.shape[0]) // 2: (-512 + prob_map.shape[0]) // 2, :]
+                cmap_name = 'tab20b' # 使用反转的 coolwarm
+
+                overlay = show_cam_on_image(img, prob_map, False, cmap_name)
+
+                fig, ax = plt.subplots()
+                shw = ax.imshow(overlay)
+                A = overlay.shape[0]
+                # init = ax.scatter(A / 2, A / 2, color='r', linewidth=1, edgecolor="w", s=160, zorder=2)
+                
+                # --- 添加颜色条1 ---
+                # 1. 创建一个 ScalarMappable 对象，它知道数值和颜色的映射关系
+                #    我们需要 prob_map_resized 的最小值和最大值来设定范围
+                vmin = prob_map.min()
+                vmax = prob_map.max()
+                #    选择与 show_cam_on_image 中使用的 colormap 匹配的 matplotlib colormap
+                cmap = plt.get_cmap(cmap_name) # Matplotlib equivalent of cv2.COLORMAP_HSV
+                norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+                mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
+
+                # 2. 添加颜色条到图像
+                #    'shw' (the imshow object) can sometimes be used directly if it retained value info,
+                #    but using a separate mappable based on the original data is safer.
+                cbar = fig.colorbar(mappable, ax=ax, fraction=0.046, pad=0.04) # Adjust fraction and pad as needed
+                cbar.set_label('Correlation / Probability Score') # 设置颜色条标签
+
+
+                ax.axis('off')
+
+                # pred = ax.scatter(pred_u + A / 2, pred_v + A / 2, linewidth=1, edgecolor="w", color='r',
+                #                 s=240, zorder=2)
+
+                # # import pdb; pdb.set_trace()
+                # gt = ax.scatter(gt_u1[g_idx] + A / 2, gt_v1[g_idx] + A / 2, color='g', linewidth=1,
+                #                 edgecolor="w", marker="*",
+                #                 s=400,
+                #                 zorder=2)
+                pred = ax.scatter(
+                    int(pred_u) + A / 2, 
+                    int(pred_v) + A / 2, 
+                    color='green', 
+                    s=200, 
+                    edgecolor='w', 
+                    marker='o', 
+                    alpha=0.8
+                    )
+                gt = ax.scatter(
+                    int(gt_u1[0]) + A / 2, 
+                    int(gt_v1[0]) + A / 2, 
+                    color='red', 
+                    s=400, 
+                    edgecolor='w', 
+                    marker='$⚑$', 
+                    alpha=0.8
+                    )
+                # ax.legend([pred, gt], ['Pred', 'GT'], markerscale=1.2, frameon=False, fontsize=16,
+                #         edgecolor="w", labelcolor='w', shadow=True, facecolor='b', loc='upper right')
+                
+                ax.legend(
+                    (pred, gt),
+                    ('Ours', 'GT'),
+                    markerscale=1.2,
+                    frameon=False,
+                    fontsize=12,
+                    edgecolor="black",
+                    labelcolor='black',
+                    shadow=True,
+                    facecolor='w',
+                    loc='upper center',  # 让 legend 在上方居中
+                    bbox_to_anchor=(0.5, 1.12),  # 设置 legend 位置，1.05 表示在图像上方
+                    ncol=3
+                )
+                
+                plt.savefig(
+                    os.path.join(visualize_dir,
+                                'pos_' + str(i * args.batch_size + 0) + '_' + str(
+                                    0) + '.png'),
+                    transparent=True, dpi=150, bbox_inches='tight', pad_inches=0.5)
+                plt.close()
+
+                test_img = to_pil_img(grd[0])
+                test_img.save(os.path.join(visualize_dir, 'grd.png'))
+                test_img = to_pil_img(sat[0])
+                test_img.save(os.path.join(visualize_dir, 'sat.png'))   
+                            # else:
+                            #     ax.legend([pred], ['Pred'], markerscale=1.2, frameon=False,
+                            #             fontsize=16,
+                            #             edgecolor="w", labelcolor='w', shadow=True, facecolor='b', loc='upper right')
+
+                            #     plt.savefig(
+                            #         os.path.join(visualize_dir,
+                            #                     'neg_' + str(Loop * args.batch_size + g_idx) + '_' + str(
+                            #                         s_idx) + '.png'),
+                            #         transparent=True, dpi=150, bbox_inches='tight', pad_inches=-0.1)
+
+                            #     plt.close()
+                print('done')
+
 
             pred_u = pred_u * meter_per_pixel
             pred_v = pred_v * meter_per_pixel
@@ -392,7 +519,7 @@ def train(net, args, save_path):
                                                                          args.GPS_error)
 
                 # loss = corr_loss + args.GPS_error_coe * GPS_loss
-                loss = corr_loss + GPS_loss * 0
+                loss = corr_loss + GPS_loss
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -543,7 +670,7 @@ if __name__ == '__main__':
     if args.test:
         # net.load_state_dict(torch.load(os.path.join(save_path, 'Model_best.pth')), strict=False)
         # current = test(net, args, save_path)
-        path = 'ModelsVIGOR/2DoF/same_rot0.0_geo_0.0001_Level1_Channels32_16_4_ConfGrd_Weakly_20face_80/model_0.pth'
+        path = 'ModelsVIGOR/2DoF/same_rot0.0_geo_0.0001_Level1_Channels32_16_4_ConfGrd_Weakly_vigor_1.0/model_2.pth'
         net.load_state_dict(torch.load(path), strict=False)
         print("Test from " + path)
         _, valloader = load_vigor_data(args.batch_size, area=args.area, rotation_range=args.rotation_range,

@@ -455,8 +455,8 @@ class ModelVIGOR(nn.Module):
         # grd_color = decoder_grd.color
         # test_img = to_pil_image(grd_color[idx].clip(min=0, max=1))
         # test_img.save(f'grd_vigor.png')
-        # test_img = to_pil_image(grd[idx].clip(min=0, max=1))
-        # test_img.save(f'ori_grd_vigor.png')
+        test_img = to_pil_image(grd[0].clip(min=0, max=1))
+        test_img.save(f'ori_grd_vigor.png')
         # test_img = to_pil_image(grd_feat_proj[0].clip(min=0, max=1))
         # test_img.save(f'ori_vigor.png')
 
@@ -464,10 +464,14 @@ class ModelVIGOR(nn.Module):
         test_img.save(f'g2s_vigor.png')
         test_img = to_pil_image(self.sat[0].clip(min=0, max=1))
         test_img.save(f'sat_vigor.png')
-        # vis
-        # single_features_to_RGB(grd2sat_feat2, idx)
-        # sat_features_to_RGB(sat_feat_dict[self.level], grd2sat_feat2, idx)
-        # sat_features_to_RGB_2D_PCA(sat_feat_dict[self.level], grd2sat_feat2, idx)
+        # vis feat
+        # grd_vis = F.interpolate(grd, (80, 160), mode='bilinear', align_corners=True)
+        # grd_mask = (grd_vis != 0).any(dim=1, keepdim=True).float()
+        # single_features_to_RGB_colormap(grd2sat_gaussian_feat2, idx=0, img_name='pca_vis_cmap_viridis.png', cmap_name='PuBuGn')
+        # single_features_to_RGB_colormap(sat_feat, idx=0, img_name='pca_vis_cmap_viridis.png', cmap_name='PuBuGn')
+        # single_features_to_RGB_colormap(grd_feat * grd_mask, idx=0, img_name='pca_vis_cmap_viridis.png', cmap_name='PuBuGn')        # sat_features_to_RGB_2D_PCA(sat_feat_dict[self.level], grd2sat_feat2, idx)
+        # single_features_to_RGB_colormap(grd2sat_gaussian_conf2, idx=0, img_name='pca_vis_cmap_viridis.png', cmap_name='PuBu')
+        # single_features_to_RGB_colormap(grd_conf * grd_mask, idx=0, img_name='pca_vis_cmap_viridis.png', cmap_name='PuBu')
         # grd_features_to_RGB_2D_PCA_concat(pers_feat)
         
         sat_feat = sat_feat_dict[self.level]

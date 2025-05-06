@@ -1,7 +1,7 @@
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 
 import torch
 import torch.nn as nn
@@ -802,7 +802,7 @@ def train(net, args, save_path, name_path):
                                                                          net.meters_per_pixel,
                                                                          args.GPS_error)
 
-                loss = corr_loss + GPS_loss*0
+                loss = corr_loss + GPS_loss
 
                 R_err = torch.abs(thetas[:, -1, -1].reshape(-1) - gt_heading.reshape(-1)).mean() * args.rotation_range
 
@@ -954,7 +954,7 @@ if __name__ == '__main__':
     net.to(device)
 
     if args.test:
-        path = 'ModelsKitti/3DoF/Stage4/lat20.0m_lon20.0m_rot0.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_op_as_confidence/model_0.pth'
+        path = 'ModelsKitti/3DoF/Stage4/lat20.0m_lon20.0m_rot0.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32_offset_0.5/model_8.pth'
         net.load_state_dict(torch.load(path), strict=False)
         print("resume from " + path)
         # test1(net, args, save_path, epoch=2)

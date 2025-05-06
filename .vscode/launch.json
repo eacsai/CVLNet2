@@ -74,7 +74,7 @@
             "--name", "no_optimize",
             "--batch_size", "8",
             "--epochs", "10",
-            "--test", "0"
+            "--test", "1"
         ],
         "console": "integratedTerminal"
       },
@@ -194,8 +194,8 @@
             "--epochs", "15",
             "--share", "0",
             "--lr", "1e-4",
-            "--test", "0"
-            // "--visualize", "1",
+            "--test", "1",
+            "--visualize", "1",
           ],
       },
   ]

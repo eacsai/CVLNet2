@@ -95,7 +95,7 @@ class VIGORDataset(Dataset):
                     label = np.array(label).astype(int)
                     delta = np.array([data[2:4], data[5:7], data[8:10], data[11:13]]).astype(float)
                     self.grd_list.append(os.path.join(self.root, city, 'pano_mask_sky', data[0]))
-                    self.depth_list.append(os.path.join(self.root, city, 'UniK3D_same_metric', data[0].replace('.jpg', '_depth.npy')))
+                    self.depth_list.append(os.path.join(self.root, city, f'UniK3D_{split}_metric', data[0].replace('.jpg', '_depth.npy')))
                     # self.depth_list.append(os.path.join(self.root, city, 'depth_anywhere_same', data[0].replace('.jpg', '_depth.png')))
                     # self.depth_list.append(os.path.join(self.root, city, 'pers_imgs_160_new', data[0].replace('.jpg', '_pers.pt')))
                     # self.grd_params.append(os.path.join(self.root, city, 'pers_imgs', data[0].replace('.jpg', '_pers.pt')))

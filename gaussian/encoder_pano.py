@@ -89,8 +89,8 @@ class GaussianEncoder(nn.Module):
             nn.ReLU(),
         )
 
-        self.offset_max = [0.3] * 3
-        self.scale_max = [0.3] * 3
+        self.offset_max = [0.5] * 3
+        self.scale_max = [0.5] * 3
 
     def map_pdf_to_opacity(
         self,
