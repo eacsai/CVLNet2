@@ -8,7 +8,7 @@ import os
 import torchvision.transforms.functional as TF
 from lpips import LPIPS
 from loss.lpips import convert_to_buffer
-
+import time
 # from GRU1 import ElevationEsitimate,VisibilityEsitimate,VisibilityEsitimate2,GRUFuse
 from models.VGGW import VGGUnet, VGGUnet_G2S, Encoder, Decoder, Decoder2, Decoder4, VGGUnetTwoDec, FeatureHead
 from jacobian import grid_sample
@@ -24,7 +24,7 @@ import cv2
 from PIL import Image
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import colors
-from visualize import single_features_to_RGB, sat_features_to_RGB, visualize_1d_pca, sat_features_to_RGB_2D_PCA
+from visualize import single_features_to_RGB, sat_features_to_RGB, visualize_1d_pca, sat_features_to_RGB_2D_PCA, single_features_to_RGB_colormap, visualize_two_features_unified_colormap
 from gaussian.encoder import GaussianEncoder
 from gaussian.decoder import GrdDecoder
 from gaussian.encoder_feat_nips import GaussianFeatEncoder
@@ -434,7 +434,7 @@ class Model(nn.Module):
 
         return shift_lats, shift_lons, thetas
 
-    def forward(self, sat_align_cam, sat_map, grd_img_left, grd_depth, left_camera_k, gt_heading=None, gt_shift_u=None, gt_shift_v=None, train=False, loop=None, save_dir=None):
+    def forward(self, sat_align_cam, sat_map, grd_img_left, grd_depth, grd_ori, left_camera_k, gt_heading=None, gt_shift_u=None, gt_shift_v=None, train=False, loop=None, save_dir=None):
         '''
         rot_corr
         Args:
@@ -452,8 +452,8 @@ class Model(nn.Module):
 
         '''
 
-        # grd = transforms.ToPILImage()(grd_img_left[0])
-        # grd.save('grd.png')
+        # grd = transforms.ToPILImage()(grd_ori[0])
+        # grd.save('grd_test.png')
         # sat = transforms.ToPILImage()(sat_map[0])
         # sat.save('sat.png')
         # sat_align_cam_ = transforms.ToPILImage()(sat_align_cam[0])
@@ -547,6 +547,13 @@ class Model(nn.Module):
             grd_conf_dict_forT[level] = grd_conf
             # dpt over
 
+            # VGG
+            # grd_feat_dict_forT, grd_conf_dict_forT = self.FeatureForT(grd_img_left)
+            # sat_feat_dict_forT, sat_conf_dict_forT = self.FeatureForT(sat_map)
+            
+            # grd_feat = grd_feat_dict_forT[level]
+            # grd_conf = grd_conf_dict_forT[level]
+
             self.grd_img_left = self.grd_img_left.unsqueeze(1)
             grd_gaussian = self.grd_pure_feat_projection(
                 self.grd_img_left, 
@@ -574,8 +581,6 @@ class Model(nn.Module):
 
             # ----------------- Translation Stage ---------------------------
 
-            grd2sat_gaussian_color, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = render_projections(grd_gaussian, (128,128), heading=heading, width=101.0, height=101.0)
-
             # decoder_grd = self.grd_decoder.forward(
             #     grd_gaussian,     # Sample from variational Gaussians
             #     self.extrinsics,
@@ -585,17 +590,64 @@ class Model(nn.Module):
             #     (64, 256),
             # )
 
+            # 第一行
+            # t0 = time.perf_counter()
+            grd2sat_gaussian_color, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = \
+                render_projections(grd_gaussian, (128,128),
+                                heading=heading, width=101.0, height=101.0)
+            # t1 = time.perf_counter()
+            # print(f"render_projections 耗时: {(t1-t0)/B:.4f} s")
 
-            # single_features_to_RGB(grd2sat_gaussian_feat2, img_name = 'sat_weak_maskfov4_feat.png')
-            # grd_origin, _, _, _ = self.project_grd_to_map(
-            #         grd_img_left, None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH,
+            # 第二行
+            # t0 = time.perf_counter()
+            # forward_map = self.forward_project(
+            #     grd_feat, left_camera_k, grd_depth,
+            #     self.meters_per_pixel[1], 128,
+            #     ori_grdH, ori_grdW
+            # )
+            # t2 = time.perf_counter()
+            # print(f"forward_project 耗时: {(t2-t1)/B:.4f} s")
+
+            # 第三行
+            # t0 = time.perf_counter()
+            # grd_feat_proj, _, _, _ = self.project_grd_to_map(
+            #     grd_feat, None, shift_u, shift_v,
+            #     heading, left_camera_k, 512,
+            #     ori_grdH, ori_grdW,
+            #     require_jac=False
+            # )
+            # t3 = time.perf_counter()
+            # print(f"project_grd_to_map 耗时: {(t3-t2)/B:.4f} s")
+
+            # grd_vis = F.interpolate(grd, (80, 160), mode='bilinear', align_corners=True)
+            # grd_mask = (grd_vis != 0).any(dim=1, keepdim=True).float()
+            # single_features_to_RGB_colormap(grd2sat_gaussian_feat2, idx=0, img_name='g2s_feat.png', cmap_name='rainbow')
+            # single_features_to_RGB_colormap(sat_feat, idx=0, img_name='sat_feat.png', cmap_name='rainbow')
+            # single_features_to_RGB_colormap(forward_map, idx=0, img_name='forward_map.png', cmap_name='rainbow')
+            # single_features_to_RGB_colormap(grd_feat_proj, idx=0, img_name='grd_feat_proj.png', cmap_name='rainbow')
+
+
+            # single_features_to_RGB_colormap(grd2sat_gaussian_feat2, img_name = 'sat_weak_maskfov4_feat.png', cmap_name='PuBuGn_r')
+            # single_features_to_RGB_colormap(sat_feat, img_name = 'sat_weak_feat.png', cmap_name='PuBuGn')
+            visualize_two_features_unified_colormap(
+                grd2sat_gaussian_feat2,
+                sat_feat,
+                idx=0,
+                img_name_base='sat_weak_feat',
+                cmap_name='rainbow'
+            )
+            # test_img = to_pil_image(grd2sat_gaussian_color[0].clip(min=0, max=1))
+            # test_img.save('sat_weak_test.png')
+
+            # grd_feat_proj, _, _, _ = self.project_grd_to_map(
+            #         self.grd_img_left.squeeze(1), None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH,
             #         ori_grdW,
             #         require_jac=False)
-            test_img = to_pil_image(grd2sat_gaussian_color[0].clip(min=0, max=1))
-            test_img.save('sat_weak_no_optimize1.png')
-
+            
+            # test_img = to_pil_image(grd_feat_proj[0].clip(min=0, max=1))
+            # test_img.save('ipm_test.png')
             # test_img = to_pil_image(self.sat_map[0].clip(min=0, max=1))
-            # test_img.save(f'origin_sat.png')
+            # test_img.save(f'sat_test.png')
 
             mask_dict = {}
             sat_feat = sat_feat_dict_forT[level]

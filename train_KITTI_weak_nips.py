@@ -1,7 +1,7 @@
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
 import torch
 import torch.nn as nn
@@ -12,6 +12,9 @@ from torchvision import transforms
 import ssl
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import OneCycleLR
+
+import matplotlib.cm as cm # 导入 colormap 模块
+import matplotlib.colors as mcolors # 导入 colors 模块
 
 to_pil_img = transforms.ToPILImage()
 ssl._create_default_https_context = ssl._create_unverified_context  # for downloading pretrained VGG weights
@@ -33,34 +36,83 @@ from matplotlib import colors
 
 
 def show_cam_on_image(img: np.ndarray,
-                      mask: np.ndarray,
-                      use_rgb: bool = True,
-                      colormap: int = cv2.COLORMAP_RAINBOW) -> np.ndarray:
-    """ This function overlays the cam mask on the image as an heatmap.
-    By default the heatmap is in BGR format.
+                         mask: np.ndarray,
+                         use_rgb: bool = True, # Still useful if img input format varies
+                         colormap: str = 'viridis') -> np.ndarray:
+    """ This function overlays the cam mask on the image as a heatmap using Matplotlib colormaps.
 
-    :param img: The base image in RGB or BGR format.
-    :param mask: The cam mask.
-    :param use_rgb: Whether to use an RGB or BGR heatmap, this should be set to True if 'img' is in RGB format.
-    :param colormap: The OpenCV colormap to be used.
-    :returns: The default image with the cam overlay.
+    :param img: The base image in RGB or BGR format, expected as np.float32 in the range [0, 1].
+    :param mask: The 2D cam mask (grayscale heatmap data).
+    :param use_rgb: Whether the input image `img` is in RGB format (affects potential blending interpretation, though addition is channel-wise).
+    :param colormap: The name of the Matplotlib colormap to be used (e.g., 'viridis', 'jet', 'coolwarm_r', etc.)
+                     or a Colormap object itself.
+    :returns: The blended image with the cam overlay as np.uint8 in the same format (RGB/BGR) as input img.
     """
-    mask = np.uint8(255 - 255 * (mask/mask.max()))
-    H, W = mask.shape
-    heatmap = cv2.applyColorMap(mask, colormap)
-    # heatmap = cv2.applyColorMap(np.uint8(255 * mask), colormap)
-    if use_rgb:
-        heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-    # heatmap = np.float32(heatmap) / 255
-    heatmap = np.float32(heatmap)/(255*2)
+    # --- Input Validation ---
+    if np.max(img) > 1.001 or np.min(img) < -0.001: # Allow for small float inaccuracies
+         # Try to normalize if it looks like 0-255 range
+         if np.max(img) > 2.0 and np.min(img) >=0:
+             print("Warning: Input image seems to be in [0, 255] range. Normalizing to [0, 1].")
+             img = img.astype(np.float32) / 255.0
+         else:
+            raise ValueError("Input image `img` should be np.float32 in the range [0, 1]")
+    if mask.ndim != 2:
+        raise ValueError(f"Input mask must be 2D, but got shape {mask.shape}")
 
-    if np.max(img) > 1:
-        raise Exception("The input image should np.float32 in the range [0, 1]")
+    # --- Mask Normalization [0, 1] ---
+    mask_min = np.min(mask)
+    mask_max = np.max(mask)
+    if mask_max == mask_min:
+        # Handle constant mask: make it fully transparent or a mid-value gray?
+        # Option 1: Make it fully transparent equivalent (0)
+        # normalized_mask = np.zeros_like(mask, dtype=np.float32)
+        # Option 2: Map to a mid-value (0.5) - better visual if value isn't zero
+        normalized_mask = np.full_like(mask, 0.5, dtype=np.float32)
+        print("Warning: Input mask is constant.")
+    else:
+        normalized_mask = (mask - mask_min) / (mask_max - mask_min)
 
-    # cam = 0.3*heatmap + 0.7*img
-    cam = heatmap + img
-    cam = cam / np.max(cam)
-    return np.uint8(255 * cam)
+    # --- Apply Matplotlib Colormap ---
+    try:
+        cmap = plt.get_cmap(colormap)
+        # Apply colormap: cmap returns RGBA values in range [0, 1]
+        heatmap_rgba = cmap(normalized_mask)
+        # Keep only RGB channels
+        heatmap_rgb = heatmap_rgba[:, :, :3] # Shape: [H, W, 3], range [0, 1], float32
+    except ValueError:
+        print(f"Warning: Colormap '{colormap}' not found. Using 'viridis'.")
+        cmap = plt.get_cmap('viridis')
+        heatmap_rgba = cmap(normalized_mask)
+        heatmap_rgb = heatmap_rgba[:, :, :3]
+
+    # --- Blending ---
+    # Ensure heatmap_rgb and img are float32 [0, 1]
+    heatmap_float = heatmap_rgb.astype(np.float32)
+    img_float = img.astype(np.float32)
+
+    # Choose blending method:
+    # Option A: Simple addition (like original if scale was 0.5)
+    # cam = heatmap_float + img_float
+    # Option B: Weighted averaging (often preferred)
+    alpha = 0.5 # Adjust transparency of heatmap
+    cam = alpha * heatmap_float + (1 - alpha) * img_float
+
+    # --- Final Normalization and Conversion ---
+    # Normalize the blended image to be in [0, 1] by clipping or dividing by max
+    # Clipping is often safer to preserve relative brightness
+    cam = np.clip(cam, 0, 1)
+    # cam = cam / np.max(cam) # Alternative: scales relative brightness
+
+    # Convert to uint8 in the range [0, 255]
+    cam_uint8 = np.uint8(255 * cam)
+
+    # --- Ensure output format matches input 'use_rgb' flag ---
+    # (Matplotlib output is RGB, so convert *back* to BGR if use_rgb is False)
+    # This step is only needed if the calling code strictly expects BGR based on use_rgb=False
+    # if not use_rgb:
+    #     cam_uint8 = cv2.cvtColor(cam_uint8, cv2.COLOR_RGB2BGR)
+
+    return cam_uint8
 
 def test1_orien(net_test, args, save_path, epoch):
     
@@ -232,11 +284,11 @@ def test1(net_test, args, save_path, epoch):
 
     with torch.no_grad():
         for i, Data in enumerate(dataloader, 0):
-            sat_align_cam, sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_depth = [item.to(device) for
-                                                                                                        item in Data[:8]]
+            sat_align_cam, sat_map, left_camera_k, grd_left_imgs, grd_left_imgs_ori, gt_shift_u, gt_shift_v, gt_heading, grd_depth = [item.to(device) for
+                                                                                                        item in Data[:9]]
 
             sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, mask_dict, shift_lats, shift_lons, thetas, render_loss = \
-                net(sat_align_cam, sat_map, grd_left_imgs, grd_depth, left_camera_k, gt_heading)
+                net(sat_align_cam, sat_map, grd_left_imgs, grd_depth, grd_left_imgs_ori, left_camera_k, gt_heading)
 
             pred_u, pred_v, corr = corr_for_translation(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict,
                                                         args,
@@ -265,9 +317,12 @@ def test1(net_test, args, save_path, epoch):
                 gt_angle = gt_heading[:, 0].data.cpu().numpy() * args.rotation_range / 180 * np.pi
 
                 prob_map = np.asarray(Image.fromarray(corr[idx].data.cpu().numpy()).resize((corr.shape[2]*4, corr.shape[1]*4)))
-                img = sat_map[idx].permute(1, 2, 0).data.cpu().numpy()[(512 - prob_map.shape[0]) // 2: -(512 - prob_map.shape[0]) // 2,
-                                                                (512 - corr.shape[2]*4) // 2: -(512 - corr.shape[2]*4) // 2, :]
-                overlay = show_cam_on_image(img, prob_map, False, cv2.COLORMAP_HSV)
+                img = sat_map[idx].permute(1, 2, 0).data.cpu().numpy()[
+                    (512 - prob_map.shape[0]) // 2: -(512 - prob_map.shape[0]) // 2,
+                    (512 - corr.shape[2]*4) // 2: -(512 - corr.shape[2]*4) // 2, :]
+                cmap_name = 'rainbow'
+                
+                overlay = show_cam_on_image(img, prob_map, False, cmap_name)
 
                 # 创建绘图
                 fig, ax = plt.subplots()
@@ -284,12 +339,49 @@ def test1(net_test, args, save_path, epoch):
                 # cbar.set_label("Activation / Heat", color='black')  # 可选：给 colorbar 命名
                 
                 # 显示图像
-                ax.imshow(overlay)
+                shw = ax.imshow(overlay)
                 # im = ax.imshow(img)
+
+
+                # --- 添加颜色条1 ---
+                # 1. 创建一个 ScalarMappable 对象，它知道数值和颜色的映射关系
+                #    我们需要 prob_map_resized 的最小值和最大值来设定范围
+                vmin = prob_map.min()
+                vmax = prob_map.max()
+                #    选择与 show_cam_on_image 中使用的 colormap 匹配的 matplotlib colormap
+                cmap = plt.get_cmap(cmap_name) # Matplotlib equivalent of cv2.COLORMAP_HSV
+                norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+                mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
+
+                # 2. 添加颜色条到图像
+                #    'shw' (the imshow object) can sometimes be used directly if it retained value info,
+                #    but using a separate mappable based on the original data is safer.
+                cbar = fig.colorbar(mappable, ax=ax, fraction=0.046, pad=0.04) # Adjust fraction and pad as needed
+                cbar.set_label('Location probability map', fontsize= 16) # 设置颜色条标签
+
+
+                ax.axis('off')
+
                 # 绘制 scatter 点：初始化位置、预测位置、GT位置
                 # init = ax.scatter(162, 26, color='blue', linewidth=2, edgecolor="w", s=80, zorder=2, marker='D', alpha=0.8)
-                pred = ax.scatter(int(pred_u[idx]) + A / 2, int(pred_v[idx]) + A / 2, color='green', s=200, edgecolor='w', marker='o', alpha=0.8)
-                gt = ax.scatter(int(gt_u1[idx]) + A / 2 + 10, int(gt_v1[idx]) + A / 2 - 15, color='red', s=400, edgecolor='w', marker='$⚑$', alpha=0.8)
+                pred = ax.scatter(
+                    int(pred_u[idx]) + A / 2, 
+                    int(pred_v[idx]) + A / 2, 
+                    color='green', 
+                    s=200, 
+                    edgecolor='w', 
+                    marker='o', 
+                    alpha=0.8
+                )
+                gt = ax.scatter(
+                    int(gt_u1[idx]) + A / 2, 
+                    int(gt_v1[idx]) + A / 2, 
+                    color='red', 
+                    s=400, 
+                    edgecolor='w', 
+                    marker='$⚑$', 
+                    alpha=0.8
+                )
 
                 # 添加 legend，调整 legend 的位置到上方留白区域
                 # ax.legend(
@@ -312,13 +404,13 @@ def test1(net_test, args, save_path, epoch):
                     ('Ours', 'GT'),
                     markerscale=1.2,
                     frameon=False,
-                    fontsize=12,
+                    fontsize=16,
                     edgecolor="black",
                     labelcolor='black',
                     shadow=True,
                     facecolor='w',
                     loc='upper center',  # 让 legend 在上方居中
-                    bbox_to_anchor=(0.5, 1.12),  # 设置 legend 位置，1.05 表示在图像上方
+                    bbox_to_anchor=(0.5, 1.14),  # 设置 legend 位置，1.05 表示在图像上方
                     ncol=3
                 )
 
@@ -340,7 +432,9 @@ def test1(net_test, args, save_path, epoch):
 
                 # 保存图像
                 plt.axis('off')  # 关闭坐标轴
-                plt.savefig('corr.png', bbox_inches='tight', pad_inches=0)
+                plt.savefig(
+                    'corr.png',
+                    transparent=True, dpi=150, bbox_inches='tight', pad_inches=0.5)
                 plt.close()
 
 
@@ -498,13 +592,13 @@ def test2(net_test, args, save_path, epoch):
 
     with torch.no_grad():
         for i, Data in enumerate(dataloader, 0):
-            sat_align_cam, sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_depth = [item.to(device)
+            sat_align_cam, sat_map, left_camera_k, grd_left_imgs, grd_left_imgs_ori, gt_shift_u, gt_shift_v, gt_heading, grd_depth = [item.to(device)
                                                                                                         for
                                                                                                         item in
-                                                                                                        Data[:8]]
+                                                                                                        Data[:9]]
             # if args.stage == 0:
             sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, mask_dict, shift_lats, shift_lons, thetas, render_loss = \
-                net(sat_align_cam, sat_map, grd_left_imgs, grd_depth, left_camera_k, gt_heading)
+                net(sat_align_cam, sat_map, grd_left_imgs, grd_depth, grd_left_imgs_ori, left_camera_k, gt_heading)
             pred_orien = thetas[:, -1, -1]
             # else:
             #     sat_feat_dict, sat_uncer_dict, g2s_feat_dict, g2s_conf_dict, shift_lats, shift_lons, pred_orien = \
@@ -668,11 +762,13 @@ def train(net, args, save_path, name_path):
         if args.rotation_range == 0:
             params = net.SatFeatureNet.parameters()
         else:
-            params = list(net.SatFeatureNet.parameters()) + list(net.TransRefine.parameters())
+            # params = list(net.SatFeatureNet.parameters()) + list(net.TransRefine.parameters())
+            parmas = net.FeatureForT.parameters()
         optimizer = optim.Adam(params, lr=1e-4)
 
     elif args.stage == 4:
         params = list(net.feat_gaussian_encoder.parameters()) + list(net.dpt.parameters())
+        # params = list(net.feat_gaussian_encoder.parameters()) + list(net.FeatureForT.parameters())
         optimizer = optim.AdamW(params, lr= 6.25e-5, weight_decay=5e-3, eps=1e-8)
         # TODO: change strategy to linear
         scale = float(args.batch_size / 8)
@@ -704,10 +800,10 @@ def train(net, args, save_path, name_path):
         
         for Loop, Data in enumerate(trainloader, 0):
             optimizer.zero_grad()
-            sat_align_cam, sat_map, left_camera_k, grd_left_imgs, gt_shift_u, gt_shift_v, gt_heading, grd_depth = [item.to(device) for item in Data[:8]]
+            sat_align_cam, sat_map, left_camera_k, grd_left_imgs, grd_left_imgs_ori, gt_shift_u, gt_shift_v, gt_heading, grd_depth = [item.to(device) for item in Data[:9]]
 
             sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, mask_dict, shift_lats, shift_lons, thetas, render_loss = \
-                net(sat_align_cam, sat_map, grd_left_imgs, grd_depth, left_camera_k, gt_heading, gt_shift_u, gt_shift_v, loop=Loop, save_dir=save_path)
+                net(sat_align_cam, sat_map, grd_left_imgs, grd_depth, grd_left_imgs_ori, left_camera_k, gt_heading, gt_shift_u, gt_shift_v, loop=Loop, save_dir=save_path)
 
             if args.stage == 0:
                 opt_loss, loss_decrease, shift_lat_decrease, shift_lon_decrease, thetas_decrease, loss_last, \
@@ -743,56 +839,6 @@ def train(net, args, save_path, name_path):
 
                     time_start = time_end
 
-            elif args.stage == 2:
-                global_step = global_step + args.batch_size
-                _, _, _, H, W = g2s_feat_dict.color.shape
-                grd_depth = F.interpolate(grd_depth.unsqueeze(1), (H, W), mode='bilinear', align_corners=True).squeeze(1)
-                grd_left_imgs = F.interpolate(grd_left_imgs, (H, W), mode='bilinear', align_corners=True)
-                depth_l1_loss = F.l1_loss(g2s_feat_dict.depth.squeeze(1), grd_depth, reduction='mean')
-                rgb_mse_loss = F.mse_loss(g2s_feat_dict.color.squeeze(1), grd_left_imgs, reduction='mean')
-                
-                # # 假设 g2s_feat_dict.depth.squeeze(1) 和 grd_depth 的形状均为 (B, H, W)
-                # pred = g2s_feat_dict.depth.squeeze(1)  # 预测深度，形状 (B, H, W)
-                # gt = grd_depth                        # ground truth 深度，形状 (B, H, W)
-
-                # B, H, W = pred.shape
-                # total_pixels = B * H * W
-                # sample_fraction = 0.5  # 例如采样 50% 的像素，可以根据需要调整
-                # sample_size = int(total_pixels * sample_fraction)
-
-                # # 生成随机采样的索引（在总像素数范围内）
-                # indices = torch.randperm(total_pixels, device=pred.device)[:sample_size]
-
-                # # 将两个张量展平，得到形状 (B*H*W,)
-                # pred_flat = pred.view(-1)
-                # gt_flat = gt.view(-1)
-
-                # # 计算选中像素的 L1 损失
-                # depth_l1_loss = F.l1_loss(pred_flat[indices], gt_flat[indices], reduction='mean')
-                
-                gt_theta = gt_heading[:, 0]
-                thetas_delta0 = torch.abs(thetas - gt_theta[:, None, None])  # [B, N_iters, level]
-                thetas_delta = torch.mean(thetas_delta0, dim=0)
-                if global_step > 20000:
-                    lpips_loss = net.lpips.forward(g2s_feat_dict.color.squeeze(1).clip(min=0, max=1), grd_left_imgs, normalize=True).mean()
-                else:
-                    lpips_loss = torch.tensor(0, dtype=torch.float32, device=grd_left_imgs.device)
-                loss = depth_l1_loss + rgb_mse_loss * 20 + lpips_loss
-                # loss = rgb_mse_loss * 20 + lpips_loss
-                # loss = depth_l1_loss
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                if Loop % 10 == 9:
-                    time_end = time.time()
-
-                    print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
-                        ' TheteLoss: ' + str(np.round(thetas_delta[-1, -1].item(), decimals=4)) +
-                        ' TotalLoss: ' + str(loss.item()) +
-                        ' Time: ' + str(time_end - time_start))
-                    
-                    time_start = time_end
-
             elif args.stage == 1 or args.stage == 3 or args.stage == 4:
                 
                 corr_maps = batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, masks=mask_dict)
@@ -802,7 +848,7 @@ def train(net, args, save_path, name_path):
                                                                          net.meters_per_pixel,
                                                                          args.GPS_error)
 
-                loss = corr_loss + GPS_loss
+                loss = corr_loss + GPS_loss * 0
 
                 R_err = torch.abs(thetas[:, -1, -1].reshape(-1) - gt_heading.reshape(-1)).mean() * args.rotation_range
 
@@ -954,7 +1000,7 @@ if __name__ == '__main__':
     net.to(device)
 
     if args.test:
-        path = 'ModelsKitti/3DoF/Stage4/lat20.0m_lon20.0m_rot0.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32_offset_0.5/model_8.pth'
+        path = 'ModelsKitti/3DoF/Stage4/lat20.0m_lon20.0m_rot0.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32_offset_0.5_confidence_original/model_9.pth'
         net.load_state_dict(torch.load(path), strict=False)
         print("resume from " + path)
         # test1(net, args, save_path, epoch=2)

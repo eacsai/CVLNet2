@@ -1,6 +1,6 @@
 import os
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 
 import torch
 import torch.nn as nn
@@ -9,6 +9,7 @@ from torchvision import transforms
 # from dataLoader.Vigor_dataset import load_vigor_data
 from dataLoader.Vigor_dataset_gs import load_vigor_data
 from torch.utils.data import Subset
+import random
 
 # from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
@@ -141,15 +142,15 @@ def val(dataloader, net, args, save_path, epoch, best=0.0, stage=None):
 
         for i, Data in enumerate(dataloader, 0):
 
-            grd, sat, depth_imgs, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
+            grd, sat, depth_imgs, grd_ori, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
 
             sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict = \
-                net(sat, grd, depth_imgs, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage)
+                net(sat, grd, depth_imgs, grd_ori, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage)
 
             pred_u, pred_v, corr = corr_for_translation(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict,
                                                         args, sat_uncer_dict)
 
-            if args.visualize and i == 4:
+            if args.visualize:
 
                 visualize_dir = os.path.join(save_path, 'visualization')
                 if not os.path.exists(visualize_dir):
@@ -176,7 +177,7 @@ def val(dataloader, net, args, save_path, epoch, best=0.0, stage=None):
                 img = sat[0].permute(1, 2, 0).data.cpu().numpy()[
                     (512 - prob_map.shape[0]) // 2: (-512 + prob_map.shape[0]) // 2,
                     (512 - prob_map.shape[0]) // 2: (-512 + prob_map.shape[0]) // 2, :]
-                cmap_name = 'tab20b' # 使用反转的 coolwarm
+                cmap_name = 'rainbow' # 使用反转的 coolwarm
 
                 overlay = show_cam_on_image(img, prob_map, False, cmap_name)
 
@@ -199,7 +200,7 @@ def val(dataloader, net, args, save_path, epoch, best=0.0, stage=None):
                 #    'shw' (the imshow object) can sometimes be used directly if it retained value info,
                 #    but using a separate mappable based on the original data is safer.
                 cbar = fig.colorbar(mappable, ax=ax, fraction=0.046, pad=0.04) # Adjust fraction and pad as needed
-                cbar.set_label('Correlation / Probability Score') # 设置颜色条标签
+                cbar.set_label('Location probability map', fontsize= 16) # 设置颜色条标签
 
 
                 ax.axis('off')
@@ -212,6 +213,28 @@ def val(dataloader, net, args, save_path, epoch, best=0.0, stage=None):
                 #                 edgecolor="w", marker="*",
                 #                 s=400,
                 #                 zorder=2)
+
+
+                # weakly = ax.scatter(
+                #     int(gt_u1[0]) + A / 2 + random.random() * 120, 
+                #     int(gt_v1[0]) + A / 2 + random.random() * 120, 
+                #     color='yellow', 
+                #     s=200, 
+                #     edgecolor='w', 
+                #     marker='s', 
+                #     alpha=0.8
+                #     )
+                
+                # forward = ax.scatter(
+                #     int(gt_u1[0]) + A / 2 + random.random() * 90, 
+                #     int(gt_v1[0]) + A / 2 + random.random() * 90, 
+                #     color='blue', 
+                #     s=200, 
+                #     edgecolor='w', 
+                #     marker='d', 
+                #     alpha=0.8
+                #     )
+
                 pred = ax.scatter(
                     int(pred_u) + A / 2, 
                     int(pred_v) + A / 2, 
@@ -238,20 +261,40 @@ def val(dataloader, net, args, save_path, epoch, best=0.0, stage=None):
                     ('Ours', 'GT'),
                     markerscale=1.2,
                     frameon=False,
-                    fontsize=12,
+                    fontsize=16,
                     edgecolor="black",
                     labelcolor='black',
                     shadow=True,
                     facecolor='w',
                     loc='upper center',  # 让 legend 在上方居中
-                    bbox_to_anchor=(0.5, 1.12),  # 设置 legend 位置，1.05 表示在图像上方
+                    bbox_to_anchor=(0.5, 1.14),  # 设置 legend 位置，1.05 表示在图像上方
                     ncol=3
                 )
+
+                # ax.legend(
+                #     (weakly, forward, pred, gt),
+                #     ('WeaklyG2S', 'Direct porjection', 'Ours', 'GT'),
+                #     markerscale=1.2,
+                #     frameon=False,
+                #     fontsize=16,
+                #     edgecolor="black",
+                #     labelcolor='black',
+                #     shadow=True,
+                #     facecolor='w',
+                #     loc='upper center',  # 让 legend 在上方居中
+                #     bbox_to_anchor=(0.5, 1.25),  # 设置 legend 位置，1.05 表示在图像上方
+                #     ncol=2
+                # )
                 
+                # plt.savefig(
+                #     os.path.join(visualize_dir,
+                #                 'pos_' + str(i * args.batch_size + 0) + '_' + str(
+                #                     0) + '.png'),
+                #     transparent=True, dpi=150, bbox_inches='tight', pad_inches=0.5)
+                # plt.close()
+
                 plt.savefig(
-                    os.path.join(visualize_dir,
-                                'pos_' + str(i * args.batch_size + 0) + '_' + str(
-                                    0) + '.png'),
+                    'corr.png',
                     transparent=True, dpi=150, bbox_inches='tight', pad_inches=0.5)
                 plt.close()
 
@@ -397,10 +440,10 @@ def train(net, args, save_path):
         for Loop, Data in enumerate(trainloader, 0):
 
             if args.Supervision == 'Weakly':
-                grd, sat, depth_imgs, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
+                grd, sat, depth_imgs, grd_ori, gt_shift_u, gt_shift_v, gt_rot, meter_per_pixel = [item.to(device) for item in Data]
 
                 sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict = \
-                    net(sat, grd, depth_imgs, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage, loop=Loop, save_dir=save_path)
+                    net(sat, grd, depth_imgs, grd_ori, meter_per_pixel, gt_rot, gt_shift_u, gt_shift_v, stage=args.stage, loop=Loop, save_dir=save_path)
 
                 corr_maps = batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, sat_uncer_dict)
 
@@ -670,12 +713,13 @@ if __name__ == '__main__':
     if args.test:
         # net.load_state_dict(torch.load(os.path.join(save_path, 'Model_best.pth')), strict=False)
         # current = test(net, args, save_path)
-        path = 'ModelsVIGOR/2DoF/same_rot0.0_geo_0.0001_Level1_Channels32_16_4_ConfGrd_Weakly_vigor_1.0/model_2.pth'
+        # path = 'ModelsVIGOR/2DoF/cross_rot0.0_geo_0.0001_Level1_Channels32_16_4_ConfGrd_Weakly_vigor_1.0/model_6.pth'
+        path = 'ModelsVIGOR/2DoF/same_rot0.0_geo_0.0001_Level1_Channels32_16_4_ConfGrd_Weakly_vigor_1.0/model_9.pth'
         net.load_state_dict(torch.load(path), strict=False)
         print("Test from " + path)
-        _, valloader = load_vigor_data(args.batch_size, area=args.area, rotation_range=args.rotation_range,
+        _, testloader = load_vigor_data(args.batch_size, area=args.area, rotation_range=args.rotation_range,
                                                  train=True, weak_supervise=args.Supervision=='Weakly', amount=args.amount)
-        val(valloader, net, args, save_path, 0, stage=args.stage)
+        val(testloader, net, args, save_path, 0, stage=args.stage)
 
     else:
 

@@ -5,6 +5,7 @@ import os
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import torch
 
 def reshape_normalize(x):
     '''
@@ -444,3 +445,165 @@ def single_features_to_RGB_colormap(sat_features, idx=0, img_name='test_img_cmap
     # img = img.resize((512, 512)) # Optional resize
     img.save(img_name)
     print(f"Saved colormapped feature visualization (zeros as black) to {img_name}")
+
+def _apply_colormap_and_save(normalized_pc_image, is_zero_mask, cmap_name, img_name):
+    """
+    应用颜色映射，设置零值掩码区域为黑色，并保存图像。
+    """
+    try:
+        cmap = plt.get_cmap(cmap_name)
+        colored_image = cmap(normalized_pc_image)[:, :, :3]
+    except ValueError:
+        print(f"警告: 颜色映射 '{cmap_name}' 未找到。使用 'viridis'。")
+        cmap = plt.get_cmap('viridis')
+        colored_image = cmap(normalized_pc_image)[:, :, :3]
+    
+    colored_image[is_zero_mask] = 0.0
+    final_image_uint8 = (colored_image * 255).astype(np.uint8)
+    img = Image.fromarray(final_image_uint8)
+    img.save(img_name)
+    print(f"已将统一颜色映射的可视化结果保存到 {img_name}")
+
+
+def visualize_two_features_unified_colormap(
+    sat_features1, 
+    sat_features2, 
+    idx=0, 
+    img_name_base='feature_viz_unified', 
+    cmap_name='PuBuGn', 
+    zero_threshold=1e-6,
+    pc_low_percentile=2.0,  # 用于PC1归一化的较低百分位数
+    pc_high_percentile=98.0 # 用于PC1归一化的较高百分位数
+):
+    """
+    可视化两个形状相同的sat_features特征集，使用统一颜色映射和百分位裁剪增强对比度。
+
+    Args:
+        sat_features1 (torch.Tensor or np.ndarray): 第一个特征张量 [B, C, H, W]。
+        sat_features2 (torch.Tensor or np.ndarray): 第二个特征张量 [B, C, H, W]。
+        idx (int): 批处理索引。
+        img_name_base (str): 输出图像文件名的基础。
+        cmap_name (str): matplotlib颜色映射名称。
+        zero_threshold (float): 特征绝对值低于此值视为零。
+        pc_low_percentile (float): 用于PC1归一化的较低百分位数 (0-100)。
+        pc_high_percentile (float): 用于PC1归一化的较高百分位数 (0-100)。
+                                     设为0和100则等效于标准的最小-最大归一化。
+    """
+    
+    def convert_to_numpy(features_tensor):
+        if isinstance(features_tensor, torch.Tensor):
+            return features_tensor.detach().cpu().numpy() if hasattr(features_tensor, 'detach') else features_tensor.cpu().numpy()
+        elif isinstance(features_tensor, np.ndarray):
+            return features_tensor
+        else:
+            raise TypeError("输入必须是PyTorch张量或NumPy数组")
+
+    def reshape_normalize_slice(features_slice_single):
+        _B_slice, _C_slice, _H_slice, _W_slice = features_slice_single.shape
+        features_reshaped = features_slice_single.transpose(0, 2, 3, 1).reshape(-1, _C_slice)
+        mean = np.mean(features_reshaped, axis=0, keepdims=True)
+        std = np.std(features_reshaped, axis=0, keepdims=True)
+        std[std == 0] = 1e-6
+        normalized = (features_reshaped - mean) / std
+        return normalized
+
+    sat_feat_batch1_np = convert_to_numpy(sat_features1)
+    sat_feat_batch2_np = convert_to_numpy(sat_features2)
+
+    if sat_feat_batch1_np.shape[1:] != sat_feat_batch2_np.shape[1:]:
+        print("警告: 两个特征集的通道、高度或宽度不匹配。")
+    B1, C, H, W = sat_feat_batch1_np.shape
+    B2, C2, H2, W2 = sat_feat_batch2_np.shape
+    if not (C==C2 and H==H2 and W==W2): raise ValueError("特征维度不匹配!")
+    if idx >= B1 or idx >= B2: raise ValueError(f"索引 {idx} 超出批次大小")
+
+    sat_feat1_slice = sat_feat_batch1_np[idx:idx+1, :, :, :]
+    sat_feat2_slice = sat_feat_batch2_np[idx:idx+1, :, :, :]
+
+    sat_feat1_spatial = sat_feat1_slice[0].transpose(1, 2, 0)
+    is_zero_mask1 = np.all(np.abs(sat_feat1_spatial) < zero_threshold, axis=-1)
+    sat_feat2_spatial = sat_feat2_slice[0].transpose(1, 2, 0)
+    is_zero_mask2 = np.all(np.abs(sat_feat2_spatial) < zero_threshold, axis=-1)
+
+    flat_norm_feat1 = reshape_normalize_slice(sat_feat1_slice)
+    flat_norm_feat2 = reshape_normalize_slice(sat_feat2_slice)
+    combined_flat_norm_feat = np.concatenate((flat_norm_feat1, flat_norm_feat2), axis=0)
+
+    if combined_flat_norm_feat.shape[0] < 2:
+        print(f"警告: 组合特征样本数 ({combined_flat_norm_feat.shape[0]}) 过少无法PCA。")
+        dummy_norm_img = np.zeros((H, W)) + 0.5
+        _apply_colormap_and_save(dummy_norm_img, np.ones((H,W),dtype=bool), cmap_name, f"{img_name_base}_feat1.png")
+        _apply_colormap_and_save(dummy_norm_img, np.ones((H,W),dtype=bool), cmap_name, f"{img_name_base}_feat2.png")
+        return
+    
+    n_pca_components = min(1, combined_flat_norm_feat.shape[0], combined_flat_norm_feat.shape[1])
+    if n_pca_components < 1:
+        print(f"警告: 无法确定PCA成分数。")
+        # (处理同上)
+        dummy_norm_img = np.zeros((H, W)) + 0.5
+        _apply_colormap_and_save(dummy_norm_img, np.ones((H,W),dtype=bool), cmap_name, f"{img_name_base}_feat1.png")
+        _apply_colormap_and_save(dummy_norm_img, np.ones((H,W),dtype=bool), cmap_name, f"{img_name_base}_feat2.png")
+        return
+        
+    pca = PCA(n_components=n_pca_components)
+    pca.fit(combined_flat_norm_feat)
+
+    pc1_transformed_flat_feat1 = pca.transform(flat_norm_feat1)
+    pc1_transformed_flat_feat2 = pca.transform(flat_norm_feat2)
+    pc1_feat1 = pc1_transformed_flat_feat1.reshape(H, W)
+    pc1_feat2 = pc1_transformed_flat_feat2.reshape(H, W)
+
+    # --- 4. 对PC1值进行全局归一化 (使用百分位裁剪) ---
+    pc1_non_zero_values_feat1 = pc1_feat1[~is_zero_mask1]
+    pc1_non_zero_values_feat2 = pc1_feat2[~is_zero_mask2]
+    
+    all_pc1_non_zero_values = np.array([])
+    if pc1_non_zero_values_feat1.size > 0:
+        all_pc1_non_zero_values = np.concatenate((all_pc1_non_zero_values, pc1_non_zero_values_feat1.flatten()))
+    if pc1_non_zero_values_feat2.size > 0:
+        all_pc1_non_zero_values = np.concatenate((all_pc1_non_zero_values, pc1_non_zero_values_feat2.flatten()))
+
+    normalized_pc1_image1 = np.zeros((H, W))
+    normalized_pc1_image2 = np.zeros((H, W))
+
+    if all_pc1_non_zero_values.size == 0:
+        normalized_pc1_image1[:] = 0.5
+        normalized_pc1_image2[:] = 0.5
+        print("警告: 两个特征图在非零区域的PC1值均为空。图像将为单色。")
+    else:
+        val_min = np.percentile(all_pc1_non_zero_values, pc_low_percentile)
+        val_max = np.percentile(all_pc1_non_zero_values, pc_high_percentile)
+
+        if val_max <= val_min: #百分位裁剪后范围为0或负(例如数据非常平坦或百分位选择极端)
+            # 回退到使用实际的最小/最大值
+            val_min = np.min(all_pc1_non_zero_values)
+            val_max = np.max(all_pc1_non_zero_values)
+            if val_max <= val_min: # 如果实际最小/最大值也无法提供范围 (数据完全平坦)
+                print(f"警告: 所有非零区域的PC1值均相同 (值为 {val_min:.3f})。非零区域将映射到0.5。")
+                # 对于这种情况，非零区域统一映射到0.5
+                normalized_pc1_image1[~is_zero_mask1] = 0.5
+                normalized_pc1_image2[~is_zero_mask2] = 0.5
+                # 后续的除法操作不会执行
+            else: # 实际最小/最大值可用
+                print(f"信息: 百分位裁剪 [{pc_low_percentile}%, {pc_high_percentile}%] 无效或导致范围为零。"
+                      f"回退使用实际全局PC1范围 [{val_min:.3f}, {val_max:.3f}] 进行归一化。")
+        else: # 百分位裁剪提供了有效范围
+             print(f"信息: 使用全局PC1百分位裁剪范围 [{val_min:.3f}, {val_max:.3f}] (基于 {pc_low_percentile}% 和 {pc_high_percentile}% 百分位) 进行归一化。")
+
+
+        # 使用确定的 val_min 和 val_max 进行归一化
+        # 只有在 val_max > val_min 时才进行除法归一化
+        if val_max > val_min:
+            norm_vals1 = (pc1_feat1 - val_min) / (val_max - val_min)
+            norm_vals2 = (pc1_feat2 - val_min) / (val_max - val_min)
+            
+            normalized_pc1_image1 = np.clip(norm_vals1, 0.0, 1.0)
+            normalized_pc1_image2 = np.clip(norm_vals2, 0.0, 1.0)
+        # else 分支 (val_max <= val_min) 已在上面处理了平坦数据的情况，
+        # normalized_pc1_image1/2 在这种情况下会保持为0，然后非零区域被设为0.5
+
+    img_name1 = f"{img_name_base}_feat1.png"
+    img_name2 = f"{img_name_base}_feat2.png"
+
+    _apply_colormap_and_save(normalized_pc1_image1, is_zero_mask1, cmap_name, img_name1)
+    _apply_colormap_and_save(normalized_pc1_image2, is_zero_mask2, cmap_name, img_name2)

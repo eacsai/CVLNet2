@@ -26,6 +26,7 @@ satmap_dir = 'satmap'
 grdimage_dir = 'depth_data'
 grd_depth_dir = 'image_02/grd_depth'  # 'image_02\\data' #
 left_color_camera_dir = 'image_02/grd_no_sky'  # 'image_02\\data' #
+left_color_camera_dir_original = 'image_02/data'  # 'image_02\\data' #
 right_color_camera_dir = 'image_03/data'  # 'image_03\\data' #
 oxts_dir = 'oxts/data'  # 'oxts\\data' #
 # depth_dir = 'depth/data_depth_annotated/train/'
@@ -112,6 +113,7 @@ class SatGrdDataset(Dataset):
         grd_left_imgs = torch.tensor([])
         grd_left_depths = torch.tensor([])
         grd_depth_imgs = torch.tensor([])
+        grd_left_imgs_ori = torch.tensor([])
         image_no = file_name[38:]
 
         # oxt: such as 0000000000.txt
@@ -134,6 +136,10 @@ class SatGrdDataset(Dataset):
 
             left_img_name = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_color_camera_dir,
                                          image_no.lower())
+                        
+            left_img_name_original = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_color_camera_dir_original,
+                                         image_no.lower())
+            
             with Image.open(left_img_name, 'r') as GrdImg:
                 grd_img_left = GrdImg.convert('RGB')
                 GrdOriImg_W, GrdOriImg_H = grd_img_left.size
@@ -141,6 +147,14 @@ class SatGrdDataset(Dataset):
                     grd_img_left = self.grdimage_transform(grd_img_left)
 
             grd_left_imgs = torch.cat([grd_left_imgs, grd_img_left.unsqueeze(0)], dim=0)
+
+            with Image.open(left_img_name_original, 'r') as GrdImg:
+                grd_img_left_ori = GrdImg.convert('RGB')
+                GrdOriImg_W, GrdOriImg_H = grd_img_left_ori.size
+                if self.grdimage_transform is not None:
+                    grd_img_left_ori = self.grdimage_transform(grd_img_left_ori)
+
+            grd_left_imgs_ori = torch.cat([grd_left_imgs_ori, grd_img_left_ori.unsqueeze(0)], dim=0)
 
         # =================== read camera intrinsice for left and right cameras ====================
         calib_file_name = os.path.join(self.root, grdimage_dir, day_dir, 'calib_cam_to_cam.txt')
@@ -209,7 +223,7 @@ class SatGrdDataset(Dataset):
 
         return sat_align_cam_central_crop, \
             sat_rand_shift_rand_rot_central_crop, \
-            left_camera_k, grd_left_imgs[0], \
+            left_camera_k, grd_left_imgs[0], grd_left_imgs_ori[0],\
             torch.tensor(-gt_shift_x, dtype=torch.float32).reshape(1), \
             torch.tensor(-gt_shift_y, dtype=torch.float32).reshape(1), \
             torch.tensor(theta, dtype=torch.float32).reshape(1), \
@@ -288,6 +302,7 @@ class SatGrdDatasetTest(Dataset):
         grd_left_imgs = torch.tensor([])
         grd_left_depths = torch.tensor([])
         grd_depth_imgs = torch.tensor([])
+        grd_left_imgs_ori = torch.tensor([])
         # image_no = file_name[38:]
 
         # oxt: such as 0000000000.txt
@@ -308,20 +323,25 @@ class SatGrdDatasetTest(Dataset):
             
             left_img_name = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_color_camera_dir,
                                          image_no.lower())
+            
+            left_img_name_original = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_color_camera_dir_original,
+                                         image_no.lower())
+            
             with Image.open(left_img_name, 'r') as GrdImg:
                 grd_img_left = GrdImg.convert('RGB')
                 GrdOriImg_W, GrdOriImg_H = grd_img_left.size
                 if self.grdimage_transform is not None:
                     grd_img_left = self.grdimage_transform(grd_img_left)
 
-            # left_depth_name = os.path.join(self.root, depth_dir, file_name.split('/')[1],
-            #                                'proj_depth/groundtruth/image_02', image_no)
-
-            # left_depth = torch.tensor(depth_read(left_depth_name), dtype=torch.float32)
-            # left_depth = F.interpolate(left_depth[None, None, :, :], (GrdImg_H, GrdImg_W))
-            # left_depth = left_depth[0, 0]
-
             grd_left_imgs = torch.cat([grd_left_imgs, grd_img_left.unsqueeze(0)], dim=0)
+
+            with Image.open(left_img_name_original, 'r') as GrdImg:
+                grd_img_left_ori = GrdImg.convert('RGB')
+                GrdOriImg_W, GrdOriImg_H = grd_img_left_ori.size
+                if self.grdimage_transform is not None:
+                    grd_img_left_ori = self.grdimage_transform(grd_img_left_ori)
+
+            grd_left_imgs_ori = torch.cat([grd_left_imgs_ori, grd_img_left_ori.unsqueeze(0)], dim=0)
             # grd_left_depths = torch.cat([grd_left_depths, left_depth.unsqueeze(0)], dim=0)
 
         # =================== read camera intrinsice for left and right cameras ====================
@@ -380,7 +400,7 @@ class SatGrdDatasetTest(Dataset):
         # gt_corr_x, gt_corr_y = self.generate_correlation_GTXY(gt_shift_x, gt_shift_y, theta)
 
         return sat_align_cam_central_crop, \
-            sat_rand_shift_rand_rot_central_crop, left_camera_k, grd_left_imgs[0], \
+            sat_rand_shift_rand_rot_central_crop, left_camera_k, grd_left_imgs[0], grd_left_imgs_ori[0],\
             torch.tensor(-gt_shift_x, dtype=torch.float32).reshape(1), \
             torch.tensor(-gt_shift_y, dtype=torch.float32).reshape(1), \
             torch.tensor(theta, dtype=torch.float32).reshape(1), \

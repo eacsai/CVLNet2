@@ -42,10 +42,11 @@ python "./train_KITTI_weak.py" \
     --level 1 \
     --ConfGrd 1 \
     --contrastive_coe 1 \
-    --name "feat32_offset_0.5_confidence_original_GPS" \
+    --name "feat32_offset_0.5_confidence_original_gpv_1" \
     --batch_size 8 \
     --epochs 10 \
-    --test 0
+    --test 0 \
+    --visualize 0
     
 
   #6.25e-5 cos
@@ -124,13 +125,13 @@ python "./train_vigor_2DoF.py" \
   --rotation_range 0 \
   --Supervision "Weakly" \
   --area "same" \
-  --name 'vigor_1.0_GPS' \
+  --name 'vigor_1.0' \
   --batch_size 12 \
   --epochs 15 \
   --grd_res 80 \
   --test 0 \
   --share 0 \
-  --lr 1e-4
+  --lr 6.5e-5
 
 python "./train_vigor_2DoF.py" \
   --rotation_range 0 \

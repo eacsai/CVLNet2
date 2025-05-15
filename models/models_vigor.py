@@ -53,27 +53,14 @@ def equirectangular_to_xyz(width, height, device):
     phi, theta = torch.meshgrid(phi, theta, indexing='ij')
 
     # 计算 OpenCV 形式的 X, Y, Z 坐标
-    x = torch.sin(phi) * torch.cos(theta)   # OpenCV X: 右
+    x = -torch.sin(phi) * torch.cos(theta)   # OpenCV X: 右
     y = -torch.cos(phi)                     # OpenCV Y: 下
     z = -torch.sin(phi) * torch.sin(theta)  # OpenCV Z: 前
 
     # 将 x, y, z 堆叠在一起，并调整维度 (height, width, 3)
     xyz = torch.stack((x, y, z), dim=-1)  # (B, V, H, W, 3)
 
-    # 旋转矩阵 (顺时针旋转 90 度)
-    R_y_90 = torch.tensor([
-        [0, 0, 1],  
-        [0, 1, 0],  
-        [-1, 0, 0]
-    ], dtype=torch.float32, device=device)
-
-    # 将点云展平进行矩阵乘法 (B*V*H*W, 3) x (3,3)
-    xyz_rotated = xyz.reshape(-1, 3) @ R_y_90.T  # 应用旋转
-
-    # 还原形状为 (H, W, 3)
-    xyz_rotated = xyz_rotated.view(height, width, 3)
-
-    return xyz_rotated
+    return xyz
 
 def onlyDepth(depth, save_name):
     cmap = cm.Spectral
@@ -286,7 +273,7 @@ class ModelVIGOR(nn.Module):
         test_img = to_pil_image(grd_feat_proj[0].clip(min=0, max=1))
         test_img.save(f'ori_vigor.png')
         # forward mapping
-        # forward_map = self.forward_project(grd, depth_img, torch.tensor([30 / 128]).to('cuda'), 128)
+        forward_map = self.forward_project(grd, depth_img, torch.tensor([30 / 128]).to('cuda'), 128)
         # test_img = to_pil_image(forward_map[0])
         # test_img.save(f'bev_forward.png')
         # export_ply(grd_gaussian.means[0], grd_gaussian.scales[0], grd_gaussian.rotations[0], grd_gaussian.color_harmonics[0], grd_gaussian.opacities[0], Path('grd_gaussian.ply'))
@@ -368,7 +355,7 @@ class ModelVIGOR(nn.Module):
         return grd_f_trans, grd_c_trans, uv
 
     # @profile
-    def forward2DoF(self, sat, grd, depth_imgs, gt_rot, meter_per_pixel):
+    def forward2DoF(self, sat, grd, depth_imgs, grd_ori, gt_rot, meter_per_pixel):
         b = sat.shape[0]
         grd_res = 80
         self.gaussian_encoder.eval()
@@ -412,8 +399,8 @@ class ModelVIGOR(nn.Module):
 
         # sat_feat_dict, sat_conf_dict = self.FeatureForT(sat)
         # grd_feat_dict, grd_conf_dict = self.FeatureForT(pers_imgs.view(b*v, c, h, w))
-        
-
+        shift_u = torch.zeros([b], dtype=torch.float32, requires_grad=True, device=sat.device)
+        shift_v = torch.zeros([b], dtype=torch.float32, requires_grad=True, device=sat.device)
         g2s_feat_dict = {}
         g2s_conf_dict = {}
         
@@ -451,29 +438,43 @@ class ModelVIGOR(nn.Module):
         # vis
         # idx = 0
         # grd_feat_proj, grd_conf_proj, grd_uv = self.project_grd_to_map(
-        #     gs_grd, None, gt_rot, shift_u, shift_v, self.level, meter_per_pixel)
+        #     grd_feat, None, gt_rot, shift_u, shift_v, self.level, meter_per_pixel)
+        # forward_map = self.forward_project(grd_feat, gs_depth_img, meter_per_pixel.to('cuda') * 5.5, 128)
+
         # grd_color = decoder_grd.color
         # test_img = to_pil_image(grd_color[idx].clip(min=0, max=1))
         # test_img.save(f'grd_vigor.png')
-        test_img = to_pil_image(grd[0].clip(min=0, max=1))
-        test_img.save(f'ori_grd_vigor.png')
+        test_img = to_pil_image(grd_ori[0].clip(min=0, max=1))
+        test_img.save(f'ori_grd_vigor_test2.png')
         # test_img = to_pil_image(grd_feat_proj[0].clip(min=0, max=1))
         # test_img.save(f'ori_vigor.png')
 
         test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
-        test_img.save(f'g2s_vigor.png')
+        test_img.save(f'g2s_vigor_test2.png')
         test_img = to_pil_image(self.sat[0].clip(min=0, max=1))
-        test_img.save(f'sat_vigor.png')
+        test_img.save(f'sat_vigor_test2.png')
         # vis feat
         # grd_vis = F.interpolate(grd, (80, 160), mode='bilinear', align_corners=True)
         # grd_mask = (grd_vis != 0).any(dim=1, keepdim=True).float()
-        # single_features_to_RGB_colormap(grd2sat_gaussian_feat2, idx=0, img_name='pca_vis_cmap_viridis.png', cmap_name='PuBuGn')
-        # single_features_to_RGB_colormap(sat_feat, idx=0, img_name='pca_vis_cmap_viridis.png', cmap_name='PuBuGn')
+        # single_features_to_RGB_colormap(grd2sat_gaussian_feat2, idx=0, img_name='pano_g2s_feat.png', cmap_name='rainbow')
+        # single_features_to_RGB_colormap(sat_feat, idx=0, img_name='pano_sat_feat.png', cmap_name='rainbow')
+        # single_features_to_RGB_colormap(torch.flip(forward_map, dims=[2]), idx=0, img_name='forward_map.png', cmap_name='rainbow')
+        # single_features_to_RGB_colormap(grd_feat_proj, idx=0, img_name='grd_feat_proj.png', cmap_name='rainbow')
+
         # single_features_to_RGB_colormap(grd_feat * grd_mask, idx=0, img_name='pca_vis_cmap_viridis.png', cmap_name='PuBuGn')        # sat_features_to_RGB_2D_PCA(sat_feat_dict[self.level], grd2sat_feat2, idx)
         # single_features_to_RGB_colormap(grd2sat_gaussian_conf2, idx=0, img_name='pca_vis_cmap_viridis.png', cmap_name='PuBu')
         # single_features_to_RGB_colormap(grd_conf * grd_mask, idx=0, img_name='pca_vis_cmap_viridis.png', cmap_name='PuBu')
         # grd_features_to_RGB_2D_PCA_concat(pers_feat)
-        
+        # visualize_two_features_unified_colormap(
+        #     grd2sat_gaussian_feat2,
+        #     sat_feat,
+        #     idx=0,
+        #     img_name_base='sat_weak_feat',
+        #     pc_low_percentile=0.0,
+        #     pc_high_percentile=100.0,
+        #     cmap_name='rainbow',
+        # )
+
         sat_feat = sat_feat_dict[self.level]
         A = sat_feat.shape[-1]
         crop_H = int(A * 0.4)
@@ -491,12 +492,12 @@ class ModelVIGOR(nn.Module):
             sat_uncer_dict[level] = None
         return sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, sat_uncer_dict
     
-    def forward(self, sat, grd, depth_imgs, meter_per_pixel, gt_rot=None, gt_shift_u=None, gt_shift_v=None, stage=None, loop=None, save_dir=None):
+    def forward(self, sat, grd, depth_imgs, grd_ori, meter_per_pixel, gt_rot=None, gt_shift_u=None, gt_shift_v=None, stage=None, loop=None, save_dir=None):
         if self.args.Supervision == 'Gaussian':
             loss = self.forwardGS(sat, grd, depth_imgs, gt_rot, meter_per_pixel)
             return loss
         else:
-            return self.forward2DoF(sat, grd, depth_imgs, gt_rot, meter_per_pixel)
+            return self.forward2DoF(sat, grd, depth_imgs, grd_ori, gt_rot, meter_per_pixel)
         
 
 def batch_wise_cross_corr(sat_feat_dict, sat_conf_dict, g2s_feat_dict, g2s_conf_dict, args, masks=None):

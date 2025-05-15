@@ -71,6 +71,7 @@ class VIGORDataset(Dataset):
 
         # load grd list
         self.grd_list = []
+        self.ori_grd_list = []
         self.depth_list = []
         self.label = []
         self.sat_cover_dict = {}
@@ -95,6 +96,7 @@ class VIGORDataset(Dataset):
                     label = np.array(label).astype(int)
                     delta = np.array([data[2:4], data[5:7], data[8:10], data[11:13]]).astype(float)
                     self.grd_list.append(os.path.join(self.root, city, 'pano_mask_sky', data[0]))
+                    self.ori_grd_list.append(os.path.join(self.root, city, 'panorama', data[0]))
                     self.depth_list.append(os.path.join(self.root, city, f'UniK3D_{split}_metric', data[0].replace('.jpg', '_depth.npy')))
                     # self.depth_list.append(os.path.join(self.root, city, 'depth_anywhere_same', data[0].replace('.jpg', '_depth.png')))
                     # self.depth_list.append(os.path.join(self.root, city, 'pers_imgs_160_new', data[0].replace('.jpg', '_pers.pt')))
@@ -111,6 +113,7 @@ class VIGORDataset(Dataset):
 
         self.data_size = int(len(self.grd_list) * amount)
         self.grd_list = self.grd_list[: self.data_size]
+        self.ori_grd_list = self.ori_grd_list[: self.data_size]
         self.label = self.label[: self.data_size]
         self.delta = self.delta[: self.data_size]
         print('Grd loaded, data size:{}'.format(self.data_size))
@@ -131,6 +134,14 @@ class VIGORDataset(Dataset):
             print('unreadable image')
             grd = PIL.Image.new('RGB', (320, 640))  # if the image is unreadable, use a blank image
         grd = self.grdimage_transform(grd)
+
+        try:
+            grd_ori = PIL.Image.open(os.path.join(self.ori_grd_list[idx]))
+            grd_ori = grd_ori.convert('RGB')
+        except:
+            print('unreadable image')
+            grd_ori = PIL.Image.new('RGB', (320, 640))  # if the image is unreadable, use a blank image
+        grd_ori = self.grdimage_transform(grd_ori)
 
         # try:
         #     depth = PIL.Image.open(os.path.join(self.depth_list[idx]))
@@ -187,7 +198,7 @@ class VIGORDataset(Dataset):
         elif 'Chicago' in self.grd_list[idx]:
             city = 'Chicago'
 
-        return grd, sat, depth_img, \
+        return grd, sat, depth_img, grd_ori, \
             torch.tensor(gt_shift_x, dtype=torch.float32), \
             torch.tensor(gt_shift_y, dtype=torch.float32), \
             torch.tensor(rotation, dtype=torch.float32), \
@@ -222,19 +233,29 @@ def load_vigor_data(batch_size, area="same", rotation_range=0, train=True, weak_
 
     vigor = VIGORDataset(root, rotation_range, split=area, train=train, transform=(transform_grd, transform_sat),
                          amount=amount)
+    
+    if train:
 
-    index_list = np.arange(vigor.__len__())
-    # np.random.shuffle(index_list)
-    train_indices = index_list[0: int(len(index_list) * 0.8)]
-    val_indices = index_list[int(len(index_list) * 0.8):]
-    training_set = Subset(vigor, train_indices)
-    # training_set = Subset(vigor, range(20))
-    val_set = Subset(vigor, val_indices)
+        index_list = np.arange(vigor.__len__())
+        # np.random.shuffle(index_list)
+        train_indices = index_list[0: int(len(index_list) * 0.8)]
+        val_indices = index_list[int(len(index_list) * 0.8):]
+        training_set = Subset(vigor, train_indices)
+        # training_set = Subset(vigor, range(20))
+        val_set = Subset(vigor, val_indices)
 
-    train_dataloader = DataLoader(training_set, batch_size=batch_size, shuffle=True, num_workers=num_thread_workers)
-    val_dataloader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+        train_dataloader = DataLoader(training_set, batch_size=batch_size, shuffle=True, num_workers=num_thread_workers)
+        val_dataloader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+        
+        return train_dataloader, val_dataloader
 
-    return train_dataloader, val_dataloader
+    else:
+        index_list = np.arange(vigor.__len__())
+        val_indices = index_list[0: int(len(index_list) * 0.02)]
+        val_set = Subset(vigor, val_indices)
+        test_dataloader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+
+        return None, test_dataloader
 
 def get_panorama_ray_directions(
     H: int,

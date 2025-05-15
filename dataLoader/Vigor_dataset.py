@@ -59,6 +59,7 @@ class VIGORDataset(Dataset):
 
         # load grd list
         self.grd_list = []
+        self.ori_grd_list = []
         self.depth_list = []
         self.label = []
         self.sat_cover_dict = {}
@@ -83,6 +84,7 @@ class VIGORDataset(Dataset):
                     label = np.array(label).astype(int)
                     delta = np.array([data[2:4], data[5:7], data[8:10], data[11:13]]).astype(float)
                     self.grd_list.append(os.path.join(self.root, city, 'pano_mask_sky', data[0]))
+                    self.ori_grd_list.append(os.path.join(self.root, city, 'panorama', data[0]))
                     self.depth_list.append(os.path.join(self.root, city, 'UniK3D_same_metric', data[0].replace('.jpg', '_depth.npy')))
                     # self.depth_list.append(os.path.join(self.root, city, 'depth_anywhere_same', data[0].replace('.jpg', '_depth.png')))                    
                     self.label.append(label)
@@ -96,10 +98,11 @@ class VIGORDataset(Dataset):
 
         from sklearn.utils import shuffle
         for rand_state in range(20):
-            self.grd_list, self.label, self.delta = shuffle(self.grd_list, self.label, self.delta, random_state=rand_state)
+            self.grd_list, self.ori_grd_list, self.label, self.delta = shuffle(self.grd_list, self.ori_grd_list, self.label, self.delta, random_state=rand_state)
 
         self.data_size = int(len(self.grd_list) * amount)
         self.grd_list = self.grd_list[: self.data_size]
+        self.ori_grd_list = self.ori_grd_list[: self.data_size]
         self.label = self.label[: self.data_size]
         self.delta = self.delta[: self.data_size]
         print('Grd loaded, data size:{}'.format(self.data_size))
@@ -119,6 +122,14 @@ class VIGORDataset(Dataset):
             print('unreadable image')
             grd = PIL.Image.new('RGB', (320, 640))  # if the image is unreadable, use a blank image
         grd = self.grdimage_transform(grd)
+
+        try:
+            grd_ori = PIL.Image.open(os.path.join(self.ori_grd_list[idx]))
+            grd_ori = grd_ori.convert('RGB')
+        except:
+            print('unreadable image')
+            grd_ori = PIL.Image.new('RGB', (320, 640))  # if the image is unreadable, use a blank image
+        grd_ori = self.grdimage_transform(grd_ori)
 
         # try:
         #     depth = PIL.Image.open(os.path.join(self.depth_list[idx]))
@@ -172,7 +183,7 @@ class VIGORDataset(Dataset):
         elif 'Chicago' in self.grd_list[idx]:
             city = 'Chicago'
 
-        return grd, sat, depth_img, \
+        return grd, sat, depth_img, grd_ori, \
             torch.tensor(gt_shift_x, dtype=torch.float32), \
             torch.tensor(gt_shift_y, dtype=torch.float32), \
             torch.tensor(rotation, dtype=torch.float32), \
