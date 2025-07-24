@@ -431,9 +431,9 @@ class ModelVIGOR(nn.Module):
             heading = torch.ones_like(gt_rot.unsqueeze(-1), device=gt_rot.device) * 90 / self.args.rotation_range
             heading = heading + gt_rot.unsqueeze(-1)
             rot_range = self.args.rotation_range
-        grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2, grd2sat_gaussian_depth = render_projections(grd_gaussian, (128,128), heading=heading, rot_range=rot_range, width=101.0, height=101.0)
-        grd2sat_feat2 = grd2sat_gaussian_feat2
-        grd2sat_conf2 = grd2sat_gaussian_conf2
+        # grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2, grd2sat_gaussian_depth = render_projections(grd_gaussian, (128,128), heading=heading, rot_range=rot_range, width=111.0, height=111.0)
+        # grd2sat_feat2 = grd2sat_gaussian_feat2
+        # grd2sat_conf2 = grd2sat_gaussian_conf2
 
         # vis
         # idx = 0
@@ -444,13 +444,13 @@ class ModelVIGOR(nn.Module):
         # grd_color = decoder_grd.color
         # test_img = to_pil_image(grd_color[idx].clip(min=0, max=1))
         # test_img.save(f'grd_vigor.png')
-        test_img = to_pil_image(grd_ori[0].clip(min=0, max=1))
-        test_img.save(f'ori_grd_vigor_test2.png')
+        # test_img = to_pil_image(grd_ori[0].clip(min=0, max=1))
+        # test_img.save(f'seq/ori_grd_vigor_test2.png')
         # test_img = to_pil_image(grd_feat_proj[0].clip(min=0, max=1))
         # test_img.save(f'ori_vigor.png')
 
-        test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
-        test_img.save(f'g2s_vigor_test2.png')
+        # test_img = to_pil_image(grd2sat_gaussian_color2[0,:,25:103,25:103].clip(min=0, max=1))
+        # test_img.save(f'seq/g2s_vigor_test2.png')
         test_img = to_pil_image(self.sat[0].clip(min=0, max=1))
         test_img.save(f'sat_vigor_test2.png')
         # vis feat
@@ -466,13 +466,13 @@ class ModelVIGOR(nn.Module):
         # single_features_to_RGB_colormap(grd_conf * grd_mask, idx=0, img_name='pca_vis_cmap_viridis.png', cmap_name='PuBu')
         # grd_features_to_RGB_2D_PCA_concat(pers_feat)
         # visualize_two_features_unified_colormap(
-        #     grd2sat_gaussian_feat2,
-        #     sat_feat,
+        #     grd2sat_gaussian_feat2[:,:,25:103,25:103],
+        #     sat_feat[:,:,25:103,25:103],
         #     idx=0,
-        #     img_name_base='sat_weak_feat',
-        #     pc_low_percentile=0.0,
-        #     pc_high_percentile=100.0,
+        #     img_name_base='seq/sat_weak_feat',
         #     cmap_name='rainbow',
+        #     pc_low_percentile=10,
+        #     pc_high_percentile=90
         # )
 
         sat_feat = sat_feat_dict[self.level]

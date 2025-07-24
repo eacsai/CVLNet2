@@ -451,11 +451,10 @@ class Model(nn.Module):
         Returns:
 
         '''
-
         # grd = transforms.ToPILImage()(grd_ori[0])
-        # grd.save('grd_test.png')
+        # grd.save('seq/grd_test.png')
         # sat = transforms.ToPILImage()(sat_map[0])
-        # sat.save('sat.png')
+        # sat.save('seq/sat_test.png')
         # sat_align_cam_ = transforms.ToPILImage()(sat_align_cam[0])
         # sat_align_cam_.save('sat_align_cam.png')
         #
@@ -590,6 +589,12 @@ class Model(nn.Module):
             #     (64, 256),
             # )
 
+            # grd_mask = (self.grd_img_left.squeeze() != 0).any(dim=1, keepdim=True).float()
+
+            # refine_depth = decoder_grd.depth * grd_mask
+            # onlyDepth(refine_depth[0], 'refine_depth.png')
+            # onlyDepth(grd_depth[0:1], 'refine_depth.png')
+
             # 第一行
             # t0 = time.perf_counter()
             grd2sat_gaussian_color, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = \
@@ -619,8 +624,6 @@ class Model(nn.Module):
             # t3 = time.perf_counter()
             # print(f"project_grd_to_map 耗时: {(t3-t2)/B:.4f} s")
 
-            # grd_vis = F.interpolate(grd, (80, 160), mode='bilinear', align_corners=True)
-            # grd_mask = (grd_vis != 0).any(dim=1, keepdim=True).float()
             # single_features_to_RGB_colormap(grd2sat_gaussian_feat2, idx=0, img_name='g2s_feat.png', cmap_name='rainbow')
             # single_features_to_RGB_colormap(sat_feat, idx=0, img_name='sat_feat.png', cmap_name='rainbow')
             # single_features_to_RGB_colormap(forward_map, idx=0, img_name='forward_map.png', cmap_name='rainbow')
@@ -629,15 +632,17 @@ class Model(nn.Module):
 
             # single_features_to_RGB_colormap(grd2sat_gaussian_feat2, img_name = 'sat_weak_maskfov4_feat.png', cmap_name='PuBuGn_r')
             # single_features_to_RGB_colormap(sat_feat, img_name = 'sat_weak_feat.png', cmap_name='PuBuGn')
-            visualize_two_features_unified_colormap(
-                grd2sat_gaussian_feat2,
-                sat_feat,
-                idx=0,
-                img_name_base='sat_weak_feat',
-                cmap_name='rainbow'
-            )
-            # test_img = to_pil_image(grd2sat_gaussian_color[0].clip(min=0, max=1))
-            # test_img.save('sat_weak_test.png')
+            # visualize_two_features_unified_colormap(
+            #     grd2sat_gaussian_feat2[:,:,26:102,26:102],
+            #     sat_feat[:,:,26:102,26:102],
+            #     idx=0,
+            #     img_name_base='seq/sat_weak_feat',
+            #     cmap_name='rainbow',
+            #     pc_low_percentile=10,
+            #     pc_high_percentile=90
+            # )
+            # test_img = to_pil_image(grd2sat_gaussian_color[0,:,26:102,26:102].clip(min=0, max=1))
+            # test_img.save('seq/sat_weak_test.png')
 
             # grd_feat_proj, _, _, _ = self.project_grd_to_map(
             #         self.grd_img_left.squeeze(1), None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH,
@@ -646,7 +651,7 @@ class Model(nn.Module):
             
             # test_img = to_pil_image(grd_feat_proj[0].clip(min=0, max=1))
             # test_img.save('ipm_test.png')
-            # test_img = to_pil_image(self.sat_map[0].clip(min=0, max=1))
+            # test_img = to_pil_image(self.sat_map[0,:,26:102,26:102].clip(min=0, max=1))
             # test_img.save(f'sat_test.png')
 
             mask_dict = {}

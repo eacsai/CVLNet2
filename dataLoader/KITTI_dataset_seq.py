@@ -22,6 +22,7 @@ satmap_dir = 'satmap'
 grdimage_dir = 'depth_data'
 grd_depth_dir = 'image_02/grd_depth'  # 'image_02\\data' #
 left_color_camera_dir = 'image_02/grd_no_sky'  # 'image_02\\data' #
+left_color_camera_dir_ori = 'image_02/data'  # 'image_02\\data' #
 right_color_camera_dir = 'image_03/data'  # 'image_03\\data' #
 oxts_dir = 'oxts/data'  # 'oxts\\data' #
 # depth_dir = 'depth/data_depth_annotated/train/'
@@ -164,7 +165,8 @@ class SatGrdDataset(Dataset):
         heading_array = torch.tensor([])
         real_gps = torch.tensor([])
         grd_left_depths = torch.tensor([])
-        
+        grd_left_imgs_ori = torch.tensor([])
+
         for i in range(len(sequence_list)):
             file_name = sequence_list[i]
             image_no = file_name[38:]
@@ -193,19 +195,30 @@ class SatGrdDataset(Dataset):
                 
                 left_img_name = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_color_camera_dir,
                                             image_no.lower())
+                
+                left_img_name_ori = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_color_camera_dir_ori,
+                                            image_no.lower())
+                                
                 with Image.open(left_img_name, 'r') as GrdImg:
                     grd_img_left = GrdImg.convert('RGB')
                     if self.grdimage_transform is not None:
                         grd_img_left = self.grdimage_transform(grd_img_left)
 
-                # left_depth_name = os.path.join(self.root, depth_dir, file_name.split('/')[1], 'proj_depth/groundtruth/image_02', image_no)
+                with Image.open(left_img_name_ori, 'r') as GrdImg:
+                    grd_img_left_ori = GrdImg.convert('RGB')
+                    if self.grdimage_transform is not None:
+                        grd_img_left_ori = self.grdimage_transform(grd_img_left_ori)
 
-                # left_depth = torch.tensor(depth_read(left_depth_name), dtype=torch.float32)
+                grd_depth = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, grd_depth_dir,
+                                image_no.lower().replace('.png', '_grd_depth.pt'))
+
+                grd_depth_left = torch.load(grd_depth, map_location=torch.device('cpu'), weights_only=True)
                 # left_depth = F.interpolate(left_depth[None, None, :, :], (GrdImg_H, GrdImg_W))
                 # left_depth = left_depth[0, 0]
 
                 grd_left_imgs = torch.cat([grd_left_imgs, grd_img_left.unsqueeze(0)], dim=0)
-                # grd_left_depths = torch.cat([grd_left_depths, left_depth.unsqueeze(0)], dim=0)
+                grd_left_imgs_ori = torch.cat([grd_left_imgs_ori, grd_img_left_ori.unsqueeze(0)], dim=0)
+                grd_left_depths = torch.cat([grd_left_depths, grd_depth_left.unsqueeze(0)], dim=0)
                 
                 loc_left_array = torch.cat([loc_left_array, loc_left.unsqueeze(0)], dim=0)
                 heading_array = torch.cat([heading_array, heading.unsqueeze(0)], dim=0)
@@ -276,7 +289,7 @@ class SatGrdDataset(Dataset):
         
         # gt_corr_x, gt_corr_y = self.generate_correlation_GTXY(gt_shift_x, gt_shift_y, theta)
 
-        return sat_map, left_camera_k, grd_left_imgs, gt_shift_xs.float(), gt_shift_ys.float(), thetas.float(), locations.float(), heading_shift_left.float(), real_gps.float(), file_name
+        return sat_map, left_camera_k, grd_left_imgs, grd_left_imgs_ori,  grd_left_depths, gt_shift_xs.float(), gt_shift_ys.float(), thetas.float(), locations.float(), heading_shift_left.float(), real_gps.float(), file_name
 
 
     # def generate_correlation_GTXY(self, gt_shift_x, gt_shift_y, gt_heading):
@@ -355,7 +368,7 @@ class SatGrdDatasetTest(Dataset):
         drive_dir = file_name[:38]
         image_no = file_name[38:]
 
-                # =================== read file names within one sequence =====================
+        # =================== read file names within one sequence =====================
         sequence_list = []
         if self.sequence > 1:
             # need get sequence count files
@@ -411,7 +424,8 @@ class SatGrdDatasetTest(Dataset):
         heading_array = torch.tensor([])
         real_gps = torch.tensor([])
         # image_no = file_name[38:]
-
+        grd_left_imgs_ori = torch.tensor([])
+        grd_left_depths = torch.tensor([])
         
         for i in range(len(sequence_list)):
             file_name = sequence_list[i]
@@ -442,20 +456,29 @@ class SatGrdDatasetTest(Dataset):
                 
                 left_img_name = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_color_camera_dir,
                                             image_no.lower())
+                
+                left_img_name_ori = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_color_camera_dir_ori,
+                                            image_no.lower())
+
                 with Image.open(left_img_name, 'r') as GrdImg:
                     grd_img_left = GrdImg.convert('RGB')
                     if self.grdimage_transform is not None:
                         grd_img_left = self.grdimage_transform(grd_img_left)
 
-                # left_depth_name = os.path.join(self.root, depth_dir, file_name.split('/')[1],
-                #                                'proj_depth/groundtruth/image_02', image_no)
+                with Image.open(left_img_name_ori, 'r') as GrdImg:
+                    grd_img_left_ori = GrdImg.convert('RGB')
+                    if self.grdimage_transform is not None:
+                        grd_img_left_ori = self.grdimage_transform(grd_img_left_ori)
 
-                # left_depth = torch.tensor(depth_read(left_depth_name), dtype=torch.float32)
-                # left_depth = F.interpolate(left_depth[None, None, :, :], (GrdImg_H, GrdImg_W))
-                # left_depth = left_depth[0, 0]
+                grd_depth = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, grd_depth_dir,
+                                image_no.lower().replace('.png', '_grd_depth.pt'))
+                
+                grd_depth_left = torch.load(grd_depth, map_location=torch.device('cpu'), weights_only=True)
+
 
                 grd_left_imgs = torch.cat([grd_left_imgs, grd_img_left.unsqueeze(0)], dim=0)
-                # grd_left_depths = torch.cat([grd_left_depths, left_depth.unsqueeze(0)], dim=0)
+                grd_left_imgs_ori = torch.cat([grd_left_imgs_ori, grd_img_left_ori.unsqueeze(0)], dim=0)                
+                grd_left_depths = torch.cat([grd_left_depths, grd_depth_left.unsqueeze(0)], dim=0)
 
                 loc_left_array = torch.cat([loc_left_array, loc_left.unsqueeze(0)], dim=0)
                 heading_array = torch.cat([heading_array, heading.unsqueeze(0)], dim=0)
@@ -530,7 +553,7 @@ class SatGrdDatasetTest(Dataset):
 
         # gt_corr_x, gt_corr_y = self.generate_correlation_GTXY(gt_shift_x, gt_shift_y, theta)
                 
-        return sat_map, left_camera_k, grd_left_imgs, gt_shift_xs.float(), gt_shift_ys.float(), thetas.float(), locations.float(), heading_shift_left.float(), real_gps, file_name
+        return sat_map, left_camera_k, grd_left_imgs, grd_left_imgs_ori, grd_left_depths, gt_shift_xs.float(), gt_shift_ys.float(), thetas.float(), locations.float(), heading_shift_left.float(), real_gps, file_name
     
     # def generate_correlation_GTXY(self, gt_shift_x, gt_shift_y, gt_heading):
         

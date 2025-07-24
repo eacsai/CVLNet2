@@ -317,6 +317,10 @@ class SatGrdDatasetTest(Dataset):
 
             grd_depth = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, grd_depth_dir,
                                 image_no.lower().replace('.png', '_grd_depth.pt'))
+            
+            # grd_depth = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, grd_depth_dir,
+            #     image_no.lower().replace('.png', '_grd_depth_metirc.pt'))
+            
             # read ground depth
             grd_depth_left = torch.load(grd_depth, map_location=torch.device('cpu'), weights_only=True)
             grd_depth_imgs = torch.cat([grd_depth_imgs, grd_depth_left.unsqueeze(0)], dim=0)

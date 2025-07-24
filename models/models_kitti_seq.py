@@ -23,10 +23,10 @@ import cv2
 from PIL import Image
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import colors
-from visualize import single_features_to_RGB, sat_features_to_RGB, visualize_1d_pca, sat_features_to_RGB_2D_PCA
+from visualize import single_features_to_RGB, sat_features_to_RGB, visualize_1d_pca, sat_features_to_RGB_2D_PCA, single_features_to_RGB_colormap, visualize_two_features_unified_colormap
 from gaussian.encoder import GaussianEncoder
 from gaussian.decoder import GrdDecoder
-from gaussian.encoder_feat import GaussianFeatEncoder
+from gaussian.encoder_feat_seq import GaussianFeatEncoder
 from vis_gaussian_seq import render_projections
 from models.dino_fit import DINO
 from models.VGGW import L2_norm
@@ -63,7 +63,7 @@ class Model(nn.Module):
 
         self.SatFeatureNet = VGGUnet(self.level, self.gs_channels)
         self.gaussian_encoder = GaussianEncoder(self.gs_channels[self.level[0] - 1])
-        self.feat_gaussian_encoder = GaussianFeatEncoder(self.gs_channels[self.level[0] - 1])
+        self.feat_gaussian_encoder = GaussianFeatEncoder()
         self.grd_decoder = GrdDecoder()
         self.lpips = LPIPS(net="vgg")
         self.FuseNet_feat = TransformerFusion(seq=args.sequence, n_embd=32, n_head=2, n_layers=2)
@@ -138,23 +138,20 @@ class Model(nn.Module):
         )
         return self.gaussians
     
-    def grd_pure_feat_projection(self, grd_img_left, grd_feat, grd_conf, grd_depth, left_camera_k, deterministic=False):
+    def grd_pure_feat_projection(self, grd_img_left, grd_feat, grd_conf, grd_depth, left_camera_k):
         # initial
         self.camera_k = left_camera_k.clone()
-        self.camera_k[:, :1, :] = self.camera_k[:, :1, :] / grd_depth.shape[2]  # original size input into feature get network/ output of feature get network
-        self.camera_k[:, 1:2, :] = self.camera_k[:, 1:2, :] / grd_depth.shape[1]
-        self.camera_k = self.camera_k.unsqueeze(1)
-        self.extrinsics = torch.eye(4).to(grd_img_left.device).unsqueeze(0).repeat(grd_img_left.shape[0], 1, 1).unsqueeze(1)
+        self.camera_k[:, :, :1, :] = self.camera_k[:, :, :1, :] / grd_depth.shape[3]  # original size input into feature get network/ output of feature get network
+        self.camera_k[:, :, 1:2, :] = self.camera_k[:, :, 1:2, :] / grd_depth.shape[2]
+        self.extrinsics = torch.eye(4).to(grd_img_left.device)[None,None,:,:].repeat(grd_img_left.shape[0], grd_img_left.shape[1], 1, 1)
         # Encode the context images.
         self.gaussians = self.feat_gaussian_encoder(
             self.grd_img_left,
+            grd_depth,
             grd_feat,
             grd_conf,
             self.camera_k, 
-            self.extrinsics, 
-            self.near,
-            self.far, 
-            deterministic
+            self.extrinsics,
         )
         return self.gaussians
 
@@ -391,7 +388,9 @@ class Model(nn.Module):
 
     def forward(self, 
                 sat_map, 
-                grd_img_left, 
+                grd_img_left,
+                grd_img_left_ori,
+                grd_depth, 
                 left_camera_k,
                 gt_shift_u,
                 gt_shift_v,
@@ -420,10 +419,10 @@ class Model(nn.Module):
         shift_v = loc_shift_left[:,:,0]
 
         B, V, _, ori_grdH, ori_grdW = grd_img_left.shape
-        left_camera_k = left_camera_k.repeat(V,1,1)
+        left_camera_k = left_camera_k[:,None,:,:].repeat(1,V,1,1)
         self.near = torch.ones(B*V, 1).to(grd_img_left.device) * 0.5
         self.far = torch.ones(B*V, 1).to(grd_img_left.device) * 100
-        self.grd_img_left = F.interpolate(grd_img_left.view(-1, 3, ori_grdH, ori_grdW), size=(64, 256), mode='bilinear', align_corners=False)
+        self.grd_img_left = F.interpolate(grd_img_left.view(-1, 3, ori_grdH, ori_grdW), size=(64, 256), mode='bilinear', align_corners=False).view(B, V, 3, 64, 256)
         # mask img
         # 生成随机的 mask，大小与 img_tensor 相同
         # mask = torch.rand(B, 1, 64, 256).to(self.device) > 0.5  # 保留三分之二的像素，剩下的为遮蔽
@@ -468,13 +467,12 @@ class Model(nn.Module):
         grd_feat_dict_forT[level] = grd_feat
         grd_conf_dict_forT[level] = grd_conf
         # dpt over
-
-        self.grd_img_left = self.grd_img_left.unsqueeze(1)
         
-        grd_gaussian = self.grd_feat_projection(
+        grd_gaussian = self.grd_pure_feat_projection(
             self.grd_img_left, 
-            grd_feat_dict_forT[level].unsqueeze(1), 
-            grd_conf_dict_forT[level].unsqueeze(1), 
+            grd_feat.view(B, V, -1, 64, 256),
+            grd_conf.view(B, V, -1, 64, 256),
+            grd_depth, 
             left_camera_k
         )
         
@@ -490,13 +488,10 @@ class Model(nn.Module):
                                                                         left_camera_k, ori_grdH, ori_grdW)
                 heading = thetas[:, -1, -1:].detach()
             else:
-                sat_feat_dict_forR, sat_uncer_dict_forR = self.SatFeatureNet(sat_map)
-                grd_feat_dict_forR, grd_conf_dict_forR = self.SatFeatureNet(grd_img_left[:,0,...])
-                shift_lats, shift_lons, thetas = self.NeuralOptimizer(grd_feat_dict_forR, sat_feat_dict_forR, B,
-                                                                        left_camera_k[:B], ori_grdH, ori_grdW)
-                heading = torch.zeros([B, 1], dtype=torch.float32, requires_grad=True, device=sat_map.device)
-                thetas = heading.unsqueeze(1)
-
+                heading = torch.zeros([B, V], dtype=torch.float32, requires_grad=True, device=sat_map.device)
+                thetas = heading.unsqueeze(-1)
+                shift_lats = None
+                shift_lons = None
         # ----------------- Translation Stage ---------------------------
 
         grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2 = render_projections(grd_gaussian, 
@@ -505,6 +500,8 @@ class Model(nn.Module):
                                                                                                      shift_u,
                                                                                                      shift_v, 
                                                                                                      heading=heading, 
+                                                                                                     width=101.0, 
+                                                                                                     height=101.0,
                                                                                                      )
         # test_img = to_pil_image(grd2sat_gaussian_color2[0,0].clip(min=0, max=1))
         # test_img.save(f'g2s_0.png')
@@ -514,6 +511,15 @@ class Model(nn.Module):
         # test_img.save(f'g2s_2.png')
         # test_img = to_pil_image(grd2sat_gaussian_color2[0,3].clip(min=0, max=1))
         # test_img.save(f'g2s_3.png')
+
+        # test_img = to_pil_image(grd_img_left_ori[0,0].clip(min=0, max=1))
+        # test_img.save(f'seq/grd_0.png')
+        # test_img = to_pil_image(grd_img_left_ori[0,1].clip(min=0, max=1))
+        # test_img.save(f'seq/grd_1.png')
+        # test_img = to_pil_image(grd_img_left_ori[0,2].clip(min=0, max=1))
+        # test_img.save(f'seq/grd_2.png')
+        # test_img = to_pil_image(grd_img_left_ori[0,3].clip(min=0, max=1))
+        # test_img.save(f'seq/grd_3.png')        
         # single_features_to_RGB(grd2sat_gaussian_feat2)
         # grd_origin, _, _, _ = self.project_grd_to_map(
         #         grd_feat, None, shift_u, shift_v, heading, left_camera_k, 512, ori_grdH,
@@ -546,6 +552,17 @@ class Model(nn.Module):
 
         g2s_feat_dict[level] = grd_feature_fuse
         g2s_conf_dict[level] = grd_conf_fuse
+
+        # visualize_two_features_unified_colormap(
+        #     grd_feature_fuse[:,:,26:102,26:102],
+        #     sat_feat[:,:,26:102,26:102],
+        #     idx=0,
+        #     img_name_base='seq/sat_weak_feat',
+        #     cmap_name='rainbow',
+        #     pc_low_percentile=10,
+        #     pc_high_percentile=90
+        # )
+
 
         for _, level in enumerate(self.level):
 

@@ -182,6 +182,8 @@ class GaussianFeatEncoder(nn.Module):
         gs_confidences = gs_confidences.broadcast_to((*opacities.shape, 1))
         # gs_confidences = opacities.unsqueeze(-1)
         gs_rgbs = gs_rgbs.broadcast_to((*opacities.shape, 3))
+
+        # Prepare the Gaussians for export.
         # sh = rgb_to_sh(
         #     rearrange(
         #         gs_rgbs,

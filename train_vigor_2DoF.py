@@ -294,7 +294,7 @@ def val(dataloader, net, args, save_path, epoch, best=0.0, stage=None):
                 # plt.close()
 
                 plt.savefig(
-                    'corr.png',
+                    'seq/corr.png',
                     transparent=True, dpi=150, bbox_inches='tight', pad_inches=0.5)
                 plt.close()
 

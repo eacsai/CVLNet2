@@ -48,6 +48,20 @@ python "./train_KITTI_weak.py" \
     --test 0 \
     --visualize 0
     
+  python "./train_KITTI_weak_seq.py" \
+    --rotation_range 0 \
+    --stage 4 \
+    --share 1 \
+    --level 1 \
+    --ConfGrd 1 \
+    --contrastive_coe 1 \
+    --name "feat32_offset_0.5_seq3_6.5e-5" \
+    --batch_size 8 \
+    --epochs 10 \
+    --test 0 \
+    --visualize 0 \
+    --sequence 3
+
 
   #6.25e-5 cos
   python "./train_KITTI_weak.py" \

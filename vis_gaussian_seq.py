@@ -11,7 +11,7 @@ import numpy as np
 from torchvision import transforms
 from gaussian.decoder import DecoderOutput
 from gaussian.diagonal_gaussian_distribution import DiagonalGaussianDistribution
-from gaussian.latent_splat import render_cuda_orthographic
+from gaussian.latent_splat_feat import render_cuda_orthographic
 # from gaussian.nopo_cuda_splatting import render_cuda_orthographic
 to_pil_image = transforms.ToPILImage()
 
@@ -37,6 +37,7 @@ class Gaussians:
     color_harmonics: Union[Float[Tensor, "batch gaussian 3 d_sh"], None]
     features: Float[Tensor, "batch gaussian dim"]
     confidence: Float[Tensor, "batch gaussian 1"]
+    rgbs: Union[Float[Tensor, "batch gaussian 3"], None]
 
 def _sanitize_color(color: Color) -> Float[Tensor, "#channel"]:
     # Convert tensor to list (or individual item).
@@ -245,13 +246,14 @@ def render_projections(
     margin: float = 0.1,
     heading: Union[Tensor, None] = None,
     look_axis = 1,
-    mode = 'kitti',
+    width = 101.0 / 2,
+    height = 101.0 / 2,
 ) -> Float[Tensor, "batch 3 3 height width"]:
     device = gaussians.means.device
     B, V = heading_shift_left.shape
     gaussians.means = gaussians.means.view(B,V,-1,3)
     gaussians.covariances = gaussians.covariances.view(B,V,-1,3,3)
-    gaussians.color_harmonics = gaussians.color_harmonics.view(B,V,-1,3,25)
+    gaussians.rgbs = gaussians.rgbs.view(B,V,-1,3)
     gaussians.opacities = gaussians.opacities.view(B,V,-1)
     gaussians.features = gaussians.features.view(B,V,-1,32)
     gaussians.confidence = gaussians.confidence.view(B,V,-1,1)
@@ -312,12 +314,6 @@ def render_projections(
             near = torch.zeros_like(far)
             # width = extents[:, right_axis]
             # height = extents[:, down_axis]
-            if mode == 'vigor':
-                width = 90
-                height = 90
-            else:
-                width = 101.0 / 2
-                height = 101.0 / 2
             # extrinsics[:, right_axis, 3] = 0
             # extrinsics[:, down_axis, 3] = 0
 
@@ -335,7 +331,9 @@ def render_projections(
                 gaussians.opacities[b:b+1,v],
                 gaussians.features[b:b+1,v],
                 gaussians.confidence[b:b+1,v],
-                fov_degrees=10.0,
+                gaussians.rgbs[b:b+1,v] if hasattr(gaussians, 'rgbs') else None,
+                fov_degrees=0.1,
+                use_sh=True,
             )
             color = render_out.color
             feature = render_out.feature
