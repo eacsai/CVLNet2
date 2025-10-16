@@ -19,7 +19,7 @@ from torchvision import transforms
 # root_dir = '/home/yujiao/dataset/Kitti1'
 # root_dir = '/home/wangqw/video_dataset/KITTI/'
 root_dir = '/data/dataset/KITTI'
-
+weather_root = '/data/qiwei/cvpr25/WeatherKITTI/snowgan'
 test_csv_file_name = 'test.csv'
 ignore_csv_file_name = 'ignore.csv'
 satmap_dir = 'satmap'
@@ -35,12 +35,14 @@ GrdImg_H = 256  # 256 # original: 375 #224, 256
 GrdImg_W = 1024  # 1024 # original:1242 #1248, 1024
 # GrdOriImg_H = 375
 # GrdOriImg_W = 1242
-num_thread_workers = 4
+num_thread_workers = 64
 
 # train_file = './dataLoader/train_files.txt'
 train_file = './dataLoader/train_files.txt'
-test1_file = './dataLoader/test1_files.txt'
-test2_file = './dataLoader/test2_files.txt'
+# test1_file = './dataLoader/test1_files.txt'
+test1_file = './dataLoader/test1_files_weather.txt'
+# test2_file = './dataLoader/test2_files.txt'
+test2_file = './dataLoader/test2_files_weather.txt'
 
 train_file_noisy = './dataLoader/train_files_noisy.txt'
 
@@ -101,6 +103,7 @@ class SatGrdDataset(Dataset):
         day_dir = file_name[:10]
         drive_dir = file_name[:38]
         image_no = file_name[38:]
+
 
 
         # =================== read satellite map ===================================
@@ -234,7 +237,7 @@ class SatGrdDatasetTest(Dataset):
     def __init__(self, root, file,
                  transform=None, shift_range_lat=20, shift_range_lon=20, rotation_range=10):
         self.root = root
-
+        self.weather_root = weather_root
         self.meter_per_pixel = utils.get_meter_per_pixel(scale=1)
         self.shift_range_meters_lat = shift_range_lat  # in terms of meters
         self.shift_range_meters_lon = shift_range_lon  # in terms of meters
@@ -289,6 +292,7 @@ class SatGrdDatasetTest(Dataset):
         file_name, gt_shift_x, gt_shift_y, theta = line.split(' ')
         day_dir = file_name[:10]
         drive_dir = file_name[:38]
+        weather_drive_dir = file_name[11:38]
         image_no = file_name[38:]
 
 
@@ -314,36 +318,61 @@ class SatGrdDatasetTest(Dataset):
             heading = torch.from_numpy(np.asarray(heading))
 
 
-            grd_depth = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, grd_depth_dir,
+            grd_depth = os.path.join(self.weather_root, weather_drive_dir, grd_depth_dir,
                                 image_no.lower().replace('.png', '_grd_depth.pt'))
             
             # grd_depth = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, grd_depth_dir,
             #     image_no.lower().replace('.png', '_grd_depth_metirc.pt'))
             
             # read ground depth
-            grd_depth_left = torch.load(grd_depth, map_location=torch.device('cpu'), weights_only=True)
+            # 首先，检查文件路径是否存在
+            if os.path.exists(grd_depth):
+                # 如果文件存在，就正常加载它
+                try:
+                    grd_depth_left = torch.load(grd_depth, map_location=torch.device('cpu'), weights_only=True)
+                    
+                    # TODO: only first time use
+                    # f_new = open('dataLoader/test2_files_weather.txt', 'a')
+                    # f_new.write(f"{line}\n")
+                    # f_new.close()
+                except Exception as e:
+                    # (可选但推荐) 增加一个异常处理，防止文件存在但已损坏或格式错误
+                    print(f"加载文件 {grd_depth} 时出错: {e}")
+                    print("将创建全为0的Tensor作为备用。")
+                    grd_depth_left = torch.zeros((256, 1024), dtype=torch.float32, device='cpu')
+            else:
+                # 如果文件不存在，就创建一个全为0的Tensor
+                print(f"文件不存在: {grd_depth}。将创建全为0的Tensor作为备用。")
+                grd_depth_left = torch.zeros((256, 1024), dtype=torch.float32, device='cpu')
+                        
+            left_img_name = os.path.join(self.weather_root, weather_drive_dir, left_color_camera_dir,
+                                         image_no.lower())
+            
+            left_img_name_original = os.path.join(self.weather_root, weather_drive_dir, left_color_camera_dir,
+                                         image_no.lower())
+            
+            if os.path.exists(left_img_name):
+                with Image.open(left_img_name, 'r') as GrdImg:
+                    grd_img_left = GrdImg.convert('RGB')
+                    GrdOriImg_W, GrdOriImg_H = grd_img_left.size
+                    if self.grdimage_transform is not None:
+                        grd_img_left = self.grdimage_transform(grd_img_left)
+            else:
+                print(f"文件不存在: {left_img_name}. 将创建全为0的Tensor作为备用。")
+                grd_img_left = torch.zeros((3, 256, 1024), dtype=torch.float32, device='cpu')
+                GrdOriImg_W, GrdOriImg_H = 1280, 384
+            if os.path.exists(left_img_name_original):
+                with Image.open(left_img_name_original, 'r') as GrdImg:
+                    grd_img_left_ori = GrdImg.convert('RGB')
+                    GrdOriImg_W, GrdOriImg_H = grd_img_left_ori.size
+                    if self.grdimage_transform is not None:
+                        grd_img_left_ori = self.grdimage_transform(grd_img_left_ori)
+            else:
+                print(f"文件不存在: {left_img_name_original}. 将创建全为0的Tensor作为备用。")
+                grd_img_left_ori = torch.zeros((3, 256, 1024), dtype=torch.float32, device='cpu')
+                GrdOriImg_W, GrdOriImg_H = 1280, 384
             grd_depth_imgs = torch.cat([grd_depth_imgs, grd_depth_left.unsqueeze(0)], dim=0)
-            
-            left_img_name = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_color_camera_dir,
-                                         image_no.lower())
-            
-            left_img_name_original = os.path.join(self.root, self.pro_grdimage_dir, drive_dir, left_color_camera_dir_original,
-                                         image_no.lower())
-            
-            with Image.open(left_img_name, 'r') as GrdImg:
-                grd_img_left = GrdImg.convert('RGB')
-                GrdOriImg_W, GrdOriImg_H = grd_img_left.size
-                if self.grdimage_transform is not None:
-                    grd_img_left = self.grdimage_transform(grd_img_left)
-
             grd_left_imgs = torch.cat([grd_left_imgs, grd_img_left.unsqueeze(0)], dim=0)
-
-            with Image.open(left_img_name_original, 'r') as GrdImg:
-                grd_img_left_ori = GrdImg.convert('RGB')
-                GrdOriImg_W, GrdOriImg_H = grd_img_left_ori.size
-                if self.grdimage_transform is not None:
-                    grd_img_left_ori = self.grdimage_transform(grd_img_left_ori)
-
             grd_left_imgs_ori = torch.cat([grd_left_imgs_ori, grd_img_left_ori.unsqueeze(0)], dim=0)
             # grd_left_depths = torch.cat([grd_left_depths, left_depth.unsqueeze(0)], dim=0)
 

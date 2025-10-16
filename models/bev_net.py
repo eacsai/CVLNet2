@@ -65,7 +65,7 @@ class BEVNet(nn.Module):
         pred = {
             "output": self.output_layer(features),
         }
-        pred["confidence"] = self.confidence_layer(features).squeeze(1).sigmoid()
+        pred["confidence"] = self.confidence_layer(features).sigmoid()
         return pred
 
     def loss(self, pred, data):

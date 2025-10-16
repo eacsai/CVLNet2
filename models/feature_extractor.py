@@ -103,7 +103,7 @@ class FeatureExtractor(nn.Module):
     default_conf = {
         "pretrained": True,
         "input_dim": 3,
-        "output_dim": 128,  # # of channels in output feature maps
+        "output_dim": 64,  # # of channels in output feature maps
         "encoder": "resnet50",  # torchvision net as string
         "remove_stride_from_first_conv": False,
         "num_downsample": None,  # how many downsample block
@@ -121,7 +121,7 @@ class FeatureExtractor(nn.Module):
                 'freeze_batch_normalization': False, 
                 'pretrained': True, 
                 'input_dim': 3, 
-                'output_dim': 128, 
+                'output_dim': 64, 
                 'encoder': 'resnet101', 
                 'remove_stride_from_first_conv': False, 
                 'num_downsample': None, 
@@ -159,7 +159,7 @@ class FeatureExtractor(nn.Module):
 
         kw = {}
         if conf.encoder.startswith("resnet"):
-            layers = ["relu", "layer1", "layer2", "layer3", "layer4"]
+            layers = ["layer1", "layer2", "layer3", "layer4"]
             kw["replace_stride_with_dilation"] = [False, False, False]
         elif conf.encoder == "vgg13":
             layers = [

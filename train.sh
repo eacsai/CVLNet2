@@ -33,7 +33,49 @@ python "./train_KITTI_weak.py" \
   --name "feat32_no_rgb" \
   --batch_size 12 \
   --epochs 8
-  
+
+python "./train_KITTI_weak_nips_orienternet.py" \
+  --rotation_range 0 \
+  --stage 4 \
+  --share 1 \
+  --level 1 \
+  --ConfGrd 1 \
+  --contrastive_coe 1 \
+  --name "orienternet_weakly_GPS" \
+  --batch_size 8 \
+  --epochs 10 \
+  --test 0 \
+  --visualize 0 
+
+python "./train_KITTI_weak_nips_vfa.py" \
+  --rotation_range 0 \
+  --stage 4 \
+  --share 1 \
+  --level 1 \
+  --ConfGrd 1 \
+  --contrastive_coe 1 \
+  --name "vfa_weakly_GPS" \
+  --batch_size 8 \
+  --epochs 10 \
+  --test 0 \
+  --visualize 0 
+
+
+python "./train_KITTI_weak_weather.py" \
+  --rotation_range 0 \
+  --stage 4 \
+  --share 1 \
+  --level 1 \
+  --ConfGrd 1 \
+  --contrastive_coe 1 \
+  --name "feat32_offset_0.5_confidence_original" \
+  --batch_size 8 \
+  --epochs 10 \
+  --test 1 \
+  --visualize 0 
+
+
+
   #6.25e-5 cos GPS
   python "./train_KITTI_weak_nips.py" \
     --rotation_range 0 \
@@ -42,7 +84,7 @@ python "./train_KITTI_weak.py" \
     --level 1 \
     --ConfGrd 1 \
     --contrastive_coe 1 \
-    --name "feat32_offset_0.5_confidence_original_gpv_1" \
+    --name "feat32_FineGPS" \
     --batch_size 8 \
     --epochs 10 \
     --test 0 \

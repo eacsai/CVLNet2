@@ -20,7 +20,7 @@ to_pil_img = transforms.ToPILImage()
 ssl._create_default_https_context = ssl._create_unverified_context  # for downloading pretrained VGG weights
 
 # from models_ford import loss_func, loss_func_l2
-from models.models_kitti_nips import Model, batch_wise_cross_corr, corr_for_translation, weak_supervise_loss, \
+from models.models_kitti_orienternet import Model, batch_wise_cross_corr, corr_for_translation, weak_supervise_loss, \
     Weakly_supervised_loss_w_GPS_error, corr_for_accurate_translation_supervision, GT_triplet_loss, loss_func
 
 import numpy as np
@@ -767,19 +767,19 @@ def train(net, args, save_path, name_path):
         optimizer = optim.Adam(params, lr=1e-4)
 
     elif args.stage == 4:
-        params = list(net.feat_gaussian_encoder.parameters()) + list(net.dpt.parameters())
+        params = net.parameters()
         # params = list(net.feat_gaussian_encoder.parameters()) + list(net.FeatureForT.parameters())
-        optimizer = optim.AdamW(params, lr= 6.25e-5, weight_decay=5e-3, eps=1e-8)
+        optimizer = optim.AdamW(params, lr=1e-4, weight_decay=5e-3, eps=1e-8)
         # TODO: change strategy to linear
         scale = float(args.batch_size / 8)
-        scheduler = OneCycleLR(optimizer, 
-                                max_lr=6.25e-5,  # 6.25e-5
-                                steps_per_epoch=int(2456 / scale), 
-                                epochs=args.epochs, # 5
-                                anneal_strategy='cos',
-                                pct_start=0.05, # 0.005
-                                cycle_momentum=False,
-                                )
+        # scheduler = OneCycleLR(optimizer, 
+        #                         max_lr=1e-4,  # 6.25e-5
+        #                         steps_per_epoch=int(2456 / scale), 
+        #                         epochs=args.epochs, # 5
+        #                         anneal_strategy='cos',
+        #                         pct_start=0.05, # 0.005
+        #                         cycle_momentum=False,
+        #                         )
         # scheduler = torch.optim.lr_scheduler.LinearLR(
         #     optimizer,
         #     1 / 2000,
@@ -855,7 +855,7 @@ def train(net, args, save_path, name_path):
                 # optimizer2.zero_grad()
                 loss.backward()
                 optimizer.step()
-                scheduler.step()
+                # scheduler.step()
                 # optimizer2.step()
                 # 打印每个参数的梯度
                 # for name, param in net.named_parameters():
@@ -867,12 +867,11 @@ def train(net, args, save_path, name_path):
                 # print(f"========Number of trainable parameters: {num_params}==========") 
                 if Loop % 10 == 9:  #
                     time_end = time.time()
-                    current_lr = scheduler.get_last_lr()[0]
+                    # current_lr = scheduler.get_last_lr()[0]
                     print('Epoch: ' + str(epoch) + ' Loop: ' + str(Loop) +
                           ' R error: ' + str(np.round(R_err.item(), decimals=4)) +
                           ' triplet loss: ' + str(np.round(corr_loss.item(), decimals=4)) +
                           ' GPS err loss: ' + str(np.round(GPS_loss.item(), decimals=4)) +
-                          f' Learning Rate: {current_lr:.9f}' +
                           ' Time: ' + str(time_end - time_start))
 
                     time_start = time_end
@@ -1000,7 +999,7 @@ if __name__ == '__main__':
     net.to(device)
 
     if args.test:
-        path = '/data/qiwei/nips25/CVLnet2/ModelsKitti/3DoF/Stage4/lat20.0m_lon20.0m_rot0.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32_offset_0.5_confidence_original_GPS_1e-4/model_9.pth'
+        path = '/data/qiwei/nips25/CVLnet2/ModelsKitti/3DoF/Stage4/lat20.0m_lon20.0m_rot0.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_orienternet_weakly/model_3.pth'
         net.load_state_dict(torch.load(path), strict=False)
         print("resume from " + path)
         # test1(net, args, save_path, epoch=2)
@@ -1018,12 +1017,6 @@ if __name__ == '__main__':
             path = '/data/qiwei/nips25/CVLnet2/ModelsKitti/3DoF/Stage4/lat20.0m_lon20.0m_rot0.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_op_as_confidence/model_0.pth'
             net.load_state_dict(torch.load(path), strict=False)
             print("resume from " + path)
-        
-        elif (args.stage == 4) > 0:
-            path = '/data/qiwei/nips25/CVLnet2/ModelsKitti/3DoF/Stage0/lat20.0m_lon20.0m_rot10.0_Nit1_TransV1_geo_Level1_Channels32_16_4_Share_feat32/model_2.pth'
-            net.load_state_dict(torch.load(path), strict=False)
-            print("load pretrained model from Stage0:")
-            print(path)
         
         if args.visualize:
             net.load_state_dict(torch.load(os.path.join(save_path, 'model_2.pth')), strict=False)
