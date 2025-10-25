@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-num_thread_workers = 32
+num_thread_workers = 64
 root = '/data/dataset/VIGOR'
 
 class VIGORDataset(Dataset):
@@ -245,15 +245,15 @@ def load_vigor_data(batch_size, area="same", rotation_range=0, train=True, weak_
         val_set = Subset(vigor, val_indices)
 
         train_dataloader = DataLoader(training_set, batch_size=batch_size, shuffle=True, num_workers=num_thread_workers)
-        val_dataloader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+        val_dataloader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=num_thread_workers)
         
         return train_dataloader, val_dataloader
 
     else:
         index_list = np.arange(vigor.__len__())
-        val_indices = index_list[0: int(len(index_list) * 0.02)]
+        val_indices = index_list[0: int(len(index_list))]
         val_set = Subset(vigor, val_indices)
-        test_dataloader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+        test_dataloader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=num_thread_workers)
 
         return None, test_dataloader
 

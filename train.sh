@@ -179,15 +179,30 @@ python "./train_vigor_2DoF.py" \
 
 python "./train_vigor_2DoF.py" \
   --rotation_range 0 \
+  --share 0 \
+  --ConfGrd 1 \
+  --level 1 \
   --Supervision "Weakly" \
   --area "same" \
-  --name 'vigor_1.0' \
-  --batch_size 12 \
-  --epochs 15 \
-  --grd_res 80 \
-  --test 0 \
+  --name 'vigor_0.3_3.0_70_1.25e-4_depth' \
+  --batch_size 32 \
+  --test 1 \
+  --lr 1.25e-4 \
+  --amount 0.01
+
+
+python "./train_vigor_2DoF.py" \
+  --rotation_range 0 \
   --share 0 \
-  --lr 6.5e-5
+  --ConfGrd 1 \
+  --level 1 \
+  --Supervision "Weakly" \
+  --area "same" \
+  --name 'vigor_0.3_3.0_80_1.25e-4_depth' \
+  --batch_size 8 \
+  --test 0 \
+  --lr 1.25e-4 \
+  --epoch 15
 
 python "./train_vigor_2DoF.py" \
   --rotation_range 0 \

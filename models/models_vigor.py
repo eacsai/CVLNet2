@@ -413,17 +413,6 @@ class ModelVIGOR(nn.Module):
             grd_conf_dict[self.level], 
             gs_depth_img,
         )
-        
-        # decoder_grd = self.grd_decoder(
-        #     grd_gaussian,     # Sample from variational Gaussians
-        #     torch.eye(4,4).unsqueeze(0).repeat(b,1,1).to(self.device),
-        #     self.camera_k.repeat(b, 1, 1),
-        #     self.near,
-        #     self.far,
-        #     (grd_res,grd_res*2)
-        # )
-        
-        
         if self.args.rotation_range == 0:
             heading = torch.ones_like(gt_rot.unsqueeze(-1), device=gt_rot.device) * 90
             rot_range = 1
@@ -431,9 +420,9 @@ class ModelVIGOR(nn.Module):
             heading = torch.ones_like(gt_rot.unsqueeze(-1), device=gt_rot.device) * 90 / self.args.rotation_range
             heading = heading + gt_rot.unsqueeze(-1)
             rot_range = self.args.rotation_range
-        # grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2, grd2sat_gaussian_depth = render_projections(grd_gaussian, (128,128), heading=heading, rot_range=rot_range, width=111.0, height=111.0)
-        # grd2sat_feat2 = grd2sat_gaussian_feat2
-        # grd2sat_conf2 = grd2sat_gaussian_conf2
+        grd2sat_gaussian_color2, grd2sat_gaussian_feat2, grd2sat_gaussian_conf2, grd2sat_gaussian_depth = render_projections(grd_gaussian, (128,128), heading=heading, rot_range=rot_range, width=70.0, height=70.0)
+        grd2sat_feat2 = grd2sat_gaussian_feat2
+        grd2sat_conf2 = grd2sat_gaussian_conf2
 
         # vis
         # idx = 0
@@ -449,10 +438,10 @@ class ModelVIGOR(nn.Module):
         # test_img = to_pil_image(grd_feat_proj[0].clip(min=0, max=1))
         # test_img.save(f'ori_vigor.png')
 
-        # test_img = to_pil_image(grd2sat_gaussian_color2[0,:,25:103,25:103].clip(min=0, max=1))
-        # test_img.save(f'seq/g2s_vigor_test2.png')
-        test_img = to_pil_image(self.sat[0].clip(min=0, max=1))
-        test_img.save(f'sat_vigor_test2.png')
+        # test_img = to_pil_image(grd2sat_gaussian_color2[0].clip(min=0, max=1))
+        # test_img.save(f'g2s_vigor_test.png')
+        # test_img = to_pil_image(self.sat[0].clip(min=0, max=1))
+        # test_img.save(f'sat_vigor_test.png')
         # vis feat
         # grd_vis = F.interpolate(grd, (80, 160), mode='bilinear', align_corners=True)
         # grd_mask = (grd_vis != 0).any(dim=1, keepdim=True).float()

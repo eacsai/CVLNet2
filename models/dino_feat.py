@@ -46,8 +46,8 @@ def tokens_to_output(output_type, dense_tokens, cls_token, feat_hw):
 class DINO(torch.nn.Module):
     def __init__(
         self,
-        dino_name="dino",
-        model_name="vitb16",
+        dino_name="dinov3",
+        model_name="vitl16",
         output="dense-cls",
         layer=-1,
         return_multilayer=True,
@@ -59,14 +59,17 @@ class DINO(torch.nn.Module):
             "vitb14": 768,
             "vitb14_reg": 768,
             "vitl14": 1024,
+            "vitl16": 1024,
             "vitg14": 1536,
         }
 
         # get model
         self.model_name = dino_name
         self.checkpoint_name = f"{dino_name}_{model_name}"
-        dino_vit = torch.hub.load(f"facebookresearch/{dino_name}", self.checkpoint_name)
-        # dino_vit = torch.hub.load('./dinov2', 'dinov2_vitl14', weights={'LVD142M':'./dinov2_models/dinov2_vitl14_pretrain.pth'}, source='local')
+        # dino_vit = torch.hub.load(f"facebookresearch/{dino_name}", self.checkpoint_name)
+        # dino_vit = torch.hub.load('./dinov3', self.checkpoint_name, weights='dinov3_models/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth', source='local')
+        dino_vit = torch.hub.load('./dinov3', self.checkpoint_name, weights='dinov3_models/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth', source='local')
+
         self.vit = dino_vit.eval().to(torch.float32)
         self.has_registers = "_reg" in model_name
 
@@ -105,6 +108,8 @@ class DINO(torch.nn.Module):
 
         if self.model_name == "dinov2":
             x = self.vit.prepare_tokens_with_masks(images, None)
+        elif self.model_name == "dinov3":
+            x, _ = self.vit.prepare_tokens_with_masks(images, None)
         else:
             x = self.vit.prepare_tokens(images)
 
@@ -127,6 +132,8 @@ class DINO(torch.nn.Module):
                 x_i = F.interpolate(x_i, size=(32, 32), mode="bilinear", align_corners=True)
             if x_i.shape[2] == 19:
                 x_i = F.interpolate(x_i, size=(16, 64), mode="bilinear", align_corners=True)
+            if x_i.shape[2] == 23:
+                x_i = F.interpolate(x_i, size=(20, 40), mode="bilinear", align_corners=True)
             outputs.append(x_i)
 
         return outputs[0] if len(outputs) == 1 else outputs

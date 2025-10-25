@@ -1,6 +1,6 @@
 import os
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 import torch
 import torch.nn as nn
@@ -562,7 +562,7 @@ def train(net, args, save_path):
                                                                          args.GPS_error)
 
                 # loss = corr_loss + args.GPS_error_coe * GPS_loss
-                loss = corr_loss + GPS_loss
+                loss = corr_loss + GPS_loss * 0
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -614,7 +614,7 @@ def parse_args():
     parser.add_argument('--test', type=int, default=0, help='test with trained model')
     parser.add_argument('--debug', type=int, default=0, help='debug to dump middle processing images')
 
-    parser.add_argument('--epochs', type=int, default=10, help='number of training epochs')
+    parser.add_argument('--epochs', type=int, default=15, help='number of training epochs')
 
     parser.add_argument('--rotation_range', type=float, default=0., help='degree')
 
@@ -664,7 +664,7 @@ def parse_args():
 
 
 def getSavePath(args):
-    restore_path = '/home/qiwei/program/CVLNet2/ModelsVIGOR/' + str(args.task) \
+    restore_path = '/data/qiwei/nips25/CVLnet2/ModelsVIGOR/' + str(args.task) \
                    + '/' + args.area + '_rot' + str(args.rotation_range) \
                    + '_' + str(args.proj) \
                    + '_' + str(args.lr) \
@@ -686,8 +686,6 @@ def getSavePath(args):
 
     save_path += '_' + args.Supervision
     save_path += '_' + args.name
-    if args.amount < 1:
-        save_path = save_path + str(args.amount) + '%'
 
     print('save_path:', save_path)
 
@@ -714,11 +712,14 @@ if __name__ == '__main__':
         # net.load_state_dict(torch.load(os.path.join(save_path, 'Model_best.pth')), strict=False)
         # current = test(net, args, save_path)
         # path = 'ModelsVIGOR/2DoF/cross_rot0.0_geo_0.0001_Level1_Channels32_16_4_ConfGrd_Weakly_vigor_1.0/model_6.pth'
-        path = 'ModelsVIGOR/2DoF/same_rot0.0_geo_0.0001_Level1_Channels32_16_4_ConfGrd_Weakly_vigor_1.0/model_9.pth'
+        path = '/data/qiwei/nips25/CVLnet2/ModelsVIGOR/2DoF/same_rot0.0_geo_0.000125_Level1_Channels32_16_4_ConfGrd_Weakly_vigor_0.3_3.0_70_1.25e-4_depth/model_13.pth'
+        # path = '/data/qiwei/nips25/CVLnet2/ModelsVIGOR/2DoF/same_rot0.0_geo_6.5e-05_Level1_Channels32_16_4_ConfGrd_Weakly_vigor_1.0/model_13.pth'
+        # path = '/data/qiwei/nips25/CVLnet2/ModelsVIGOR/2DoF/cross_rot0.0_geo_0.0001_Level1_Channels32_16_4_ConfGrd_Weakly_vigor_1.0/model_14.pth'
+        # path='/data/qiwei/nips25/CVLnet2/ModelsVIGOR/2DoF/cross_rot0.0_geo_0.000125_Level1_Channels32_16_4_ConfGrd_Weakly_vigor_1.0_GPS/model_14.pth'
         net.load_state_dict(torch.load(path), strict=False)
         print("Test from " + path)
         _, testloader = load_vigor_data(args.batch_size, area=args.area, rotation_range=args.rotation_range,
-                                                 train=True, weak_supervise=args.Supervision=='Weakly', amount=args.amount)
+                                                 train=False, weak_supervise=args.Supervision=='Weakly', amount=args.amount)
         val(testloader, net, args, save_path, 0, stage=args.stage)
 
     else:

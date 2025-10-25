@@ -55,9 +55,12 @@ class GaussianEncoder(nn.Module):
         self.backbone = BackboneDino()
         self.backbone_projection = nn.Sequential(
             nn.ReLU(),
-            nn.Linear(self.backbone.d_out, 128),
+            nn.Linear(self.backbone.d_out + 1 + 3, 128),
         )
-
+        # self.backbone_projection = nn.Sequential(
+        #     nn.ReLU(),
+        #     nn.Linear(self.backbone.d_out, 128),
+        # )
         self.gpv = 3
         self.to_opacity = nn.Sequential(
             nn.ReLU(),
@@ -89,8 +92,8 @@ class GaussianEncoder(nn.Module):
             nn.ReLU(),
         )
 
-        self.offset_max = [1.0] * 3
-        self.scale_max = [1.0] * 3
+        self.offset_max = [3.0] * 3
+        self.scale_max = [0.3] * 3
 
     def map_pdf_to_opacity(
         self,
@@ -111,6 +114,7 @@ class GaussianEncoder(nn.Module):
         features = self.backbone(img)
         device = img.device
         # h, w = features.shape[-2:]
+        features = torch.cat((img, depth_map / 20.0, features), dim=1)
         features = rearrange(features, "b c h w -> b h w c").contiguous()
         features = self.backbone_projection(features)
         features = rearrange(features, "b h w c -> b c h w").contiguous()
